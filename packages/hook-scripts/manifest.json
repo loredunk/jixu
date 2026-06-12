@@ -1,0 +1,8 @@
+{
+  "name": "jixu",
+  "version": "0.1.0",
+  "description": "自动续接中断的 Claude Code 会话",
+  "author": "jixu contributors",
+  "license": "MIT",
+  "hooks": "hooks.json"
+}

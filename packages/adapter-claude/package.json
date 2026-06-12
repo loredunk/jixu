@@ -1,0 +1,13 @@
+{
+  "name": "@jixu/adapter-claude",
+  "version": "0.1.0",
+  "description": "Claude Code 适配器",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "dependencies": {
+    "@jixu/core": "*"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src",
+    "paths": {
+      "@jixu/core": ["../core/src/index.ts"],
+      "@jixu/adapter-claude": ["../adapter-claude/src/index.ts"]
+    }
+  },
+  "include": ["src"]
+}

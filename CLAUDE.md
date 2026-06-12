@@ -15,12 +15,11 @@
 
 | 里程碑 | 内容摘要 | 状态 |
 |--------|----------|------|
-| **M1** | 契约类型 + 决策核心(TDD) + CC 适配器(headless) + hook 脚本 + demo | 🔵 **进行中** |
+| **M1** | 契约类型 + 决策核心(TDD) + CC 适配器(headless) + hook 脚本 + demo | ✅ **完成** |
 | **M2** | log-tailer + OAuth usage API + 完整 Waiter daemon | ⬜ 待开始 |
 | **M3** | PTY 模式 + Codex 占位 + npm/plugin 发布配置 | ⬜ 待开始 |
 
-**当前任务（M1）**：写 `packages/core/` 的单测和实现，`packages/adapter-claude/` headless resume，`packages/hook-scripts/`，`demo/simulate.ts`。  
-顺序：**先写测试，再写实现**（TDD）。
+**当前任务（M2）**：log-tailer（tail CC debug log，抓 ECONNRESET）、OAuth usage API（resets_at 来源 #1）、完整 Waiter daemon（start/stop/status/init 守护进程）。
 
 ---
 

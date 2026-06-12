@@ -108,7 +108,7 @@
 
 | 里程碑 | 内容 | 状态 |
 |--------|------|------|
-| **M1** | 契约类型 + 决策核心(TDD) + ClaudeCodeAdapter(headless) + hook 脚本 + demo | 🔵 **进行中** |
+| **M1** | 契约类型 + 决策核心(TDD) + ClaudeCodeAdapter(headless) + hook 脚本 + demo | ✅ **完成** |
 | **M2** | log-tailer + OAuth usage API + 完整 Waiter daemon（start/stop/status/init）| ⬜ 待开始 |
 | **M3** | PTY 模式 + CodexAdapter 占位 + npm/plugin 发布配置 | ⬜ 待开始 |
 

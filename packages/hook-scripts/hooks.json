@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "overloaded|rate.?limit|auth|billing|context.too.long|invalid.request",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/stop-failure.sh"
+          }
+        ]
+      }
+    ]
+  }
+}

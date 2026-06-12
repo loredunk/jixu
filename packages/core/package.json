@@ -1,0 +1,10 @@
+{
+  "name": "@jixu/core",
+  "version": "0.1.0",
+  "description": "归一化契约与决策引擎（tool-agnostic）",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  }
+}

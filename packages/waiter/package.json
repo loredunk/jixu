@@ -1,0 +1,19 @@
+{
+  "name": "jixu",
+  "version": "0.1.0",
+  "description": "Claude Code 会话自动续接守护进程",
+  "bin": {
+    "jixu": "src/main.ts"
+  },
+  "main": "src/main.ts",
+  "dependencies": {
+    "@jixu/adapter-claude": "*",
+    "@jixu/core": "*"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "tsx src/main.ts start",
+    "stop": "tsx src/main.ts stop",
+    "status": "tsx src/main.ts status"
+  }
+}
