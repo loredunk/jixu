@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process'
 import type { IToolAdapter, AdapterCapabilities, UsageInfo } from '@jixu/core'
+import { getUsage } from './usage-api.js'
 
 export class ClaudeCodeAdapter implements IToolAdapter {
   readonly id = 'claude-code'
@@ -18,8 +19,7 @@ export class ClaudeCodeAdapter implements IToolAdapter {
   }
 
   async usage(): Promise<UsageInfo> {
-    // M2 实现 OAuth usage API；M1 返回空对象
-    return {}
+    return getUsage()
   }
 
   async kill(pid: number): Promise<void> {

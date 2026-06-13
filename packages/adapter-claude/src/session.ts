@@ -1,13 +1,13 @@
 import { readFileSync } from 'node:fs'
-import type { JobFile } from '@jixu/core'
+import type { DiskJobFile } from '@jixu/core'
 
 /**
- * 从 job 文件中读取 session_id。
- * 用于 waiter 在收到 hook 写入的 job 文件后，确定要续接哪个会话。
+ * 读取磁盘上的 job 文件。可能是 hook 写的 RawHookJobFile（含 rawPayload）
+ * 或 log-tailer 写的 JobFile（含 event），调用方据字段区分。
  */
-export function readJobFile(path: string): JobFile {
+export function readJobFile(path: string): DiskJobFile {
   const raw = readFileSync(path, 'utf-8')
-  return JSON.parse(raw) as JobFile
+  return JSON.parse(raw) as DiskJobFile
 }
 
 /**
