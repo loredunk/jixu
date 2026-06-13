@@ -1,6 +1,12 @@
 import { spawn } from 'node:child_process'
 import type { IToolAdapter, AdapterCapabilities, UsageInfo } from '@jixu/core'
 import { getUsage } from './usage-api.js'
+import {
+  type PtySpawner,
+  nodePtySpawner,
+  claudeBin,
+  buildClaudeArgs,
+} from './pty.js'
 
 export class ClaudeCodeAdapter implements IToolAdapter {
   readonly id = 'claude-code'
@@ -8,14 +14,22 @@ export class ClaudeCodeAdapter implements IToolAdapter {
   readonly capabilities: AdapterCapabilities = {
     errorDetect: 'strong',  // StopFailure hook 可用
     resetTime: true,         // OAuth usage API 可获取 resets_at
-    forceContinue: false,    // PTY 模式 M3 实现
+    forceContinue: true,     // PTY 交互式续接（M3）
+  }
+
+  /** 惰性创建，避免无 PTY 场景触碰 node-pty 原生模块 */
+  private _ptySpawner: PtySpawner | undefined
+
+  constructor(opts: { ptySpawner?: PtySpawner } = {}) {
+    if (opts.ptySpawner) this._ptySpawner = opts.ptySpawner
   }
 
   async resume(mode: 'headless' | 'pty', sessionId: string): Promise<void> {
     if (mode === 'pty') {
-      throw new Error('PTY 模式在 M3 实现，当前只支持 headless')
+      await this._ptyResume(sessionId)
+    } else {
+      await this._headlessResume(sessionId)
     }
-    await this._headlessResume(sessionId)
   }
 
   async usage(): Promise<UsageInfo> {
@@ -52,6 +66,23 @@ export class ClaudeCodeAdapter implements IToolAdapter {
           reject(err)
         }
       }
+    })
+  }
+
+  /**
+   * PTY 交互式续接：在伪终端里起 `claude --resume <sid>`，输出转发到 stdout，
+   * 进程退出码 0/null 视为成功。`jixu run` 的前台托管走更完整的 supervisor，
+   * 这里是 IToolAdapter 契约下的最小实现（守护进程也可用）。
+   */
+  private _ptyResume(sessionId: string): Promise<void> {
+    const spawner = (this._ptySpawner ??= nodePtySpawner())
+    return new Promise((resolve, reject) => {
+      const handle = spawner.spawn(claudeBin(), buildClaudeArgs({ sessionId, resume: true }))
+      handle.onData((d) => process.stdout.write(d))
+      handle.onExit(({ exitCode }) => {
+        if (exitCode === 0) resolve()
+        else reject(new Error(`claude（PTY）退出码 ${exitCode}`))
+      })
     })
   }
 

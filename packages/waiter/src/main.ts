@@ -1,7 +1,15 @@
 #!/usr/bin/env node
 import { openSync, writeFileSync, mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
+import {
+  ClaudeCodeAdapter,
+  nodePtySpawner,
+  claudeBin,
+  buildClaudeArgs,
+  newSessionId,
+} from '@jixu/adapter-claude'
 import { Daemon } from './daemon.js'
+import { Supervisor, type SupervisorIo, type SupervisedPty } from './supervisor.js'
 import { installHookPlugin } from './init.js'
 import { readState } from './state.js'
 import { pidFilePath, logFilePath, stateFilePath } from './paths.js'
@@ -14,11 +22,16 @@ import {
   DaemonAlreadyRunningError,
 } from './process-mgr.js'
 
-const USAGE = '用法: jixu start|stop|status|init'
+const USAGE = '用法: jixu run|start|stop|status|init'
+
+/** 自己管理退出/常驻的命令，main 不替它们 process.exit */
+const SELF_MANAGED = new Set(['__daemon', 'run'])
 
 async function main(): Promise<number> {
   const cmd = process.argv[2]
   switch (cmd) {
+    case 'run':
+      return cmdRun()
     case 'start':
       return cmdStart()
     case '__daemon': // 内部：被 start detached 拉起的实际守护进程
@@ -32,6 +45,84 @@ async function main(): Promise<number> {
     default:
       console.error(USAGE)
       return 1
+  }
+}
+
+/**
+ * `jixu run [-- <claude 参数>]`：前台用 PTY 托管 Claude Code。
+ * 输出/输入直通你的终端（就是普通 claude 会话），中断时在本窗口自动续接。
+ */
+function cmdRun(): number {
+  const extraArgs = process.argv.slice(3)
+  const spawner = nodePtySpawner() // 缺 node-pty 时这里抛友好错误
+  const io = realIo()
+
+  const supervisor = new Supervisor({
+    launch: (sessionId, resume, size): SupervisedPty => {
+      const h = spawner.spawn(claudeBin(), buildClaudeArgs({ sessionId, resume, extraArgs }), {
+        cols: size.cols,
+        rows: size.rows,
+        env: process.env,
+      })
+      return {
+        onData: (cb) => h.onData(cb),
+        onExit: (cb) => h.onExit((e) => cb({ exitCode: e.exitCode })),
+        write: (d) => h.write(d),
+        resize: (c, r) => h.resize(c, r),
+        kill: () => h.kill(),
+      }
+    },
+    io,
+    usage: () => new ClaudeCodeAdapter().usage(),
+    newSessionId,
+  })
+
+  supervisor
+    .run()
+    .then((code) => {
+      io.restore()
+      process.exit(code)
+    })
+    .catch((err: unknown) => {
+      io.restore()
+      console.error(err)
+      process.exit(1)
+    })
+  return 0 // 不立即退出，supervisor 自管生命周期
+}
+
+interface RealIo extends SupervisorIo {
+  restore: () => void
+}
+
+function realIo(): RealIo {
+  const stdin = process.stdin
+  const stdout = process.stdout
+  const wasRaw = stdin.isTTY ? stdin.isRaw : false
+  if (stdin.isTTY) stdin.setRawMode(true)
+  stdin.resume()
+
+  const inputCbs: Array<(d: string) => void> = []
+  const resizeCbs: Array<(c: number, r: number) => void> = []
+  stdin.on('data', (d: Buffer) => {
+    const s = d.toString('utf8')
+    for (const cb of inputCbs) cb(s)
+  })
+  stdout.on('resize', () => {
+    for (const cb of resizeCbs) cb(stdout.columns ?? 80, stdout.rows ?? 30)
+  })
+
+  return {
+    write: (d) => void stdout.write(d),
+    // 青色前缀 + \r\n（裸模式需要回车）把 jixu 状态行与 CC 输出区分开
+    status: (m) => void stdout.write(`\r\n\x1b[36m[jixu]\x1b[0m ${m}\r\n`),
+    onUserInput: (cb) => void inputCbs.push(cb),
+    onResize: (cb) => void resizeCbs.push(cb),
+    size: () => ({ cols: stdout.columns ?? 80, rows: stdout.rows ?? 30 }),
+    restore: () => {
+      if (stdin.isTTY) stdin.setRawMode(wasRaw)
+      stdin.pause()
+    },
   }
 }
 
@@ -151,8 +242,8 @@ function cmdInit(): number {
 
 main()
   .then((code) => {
-    // __daemon 与长驻命令不主动退出；其余命令按返回码退出
-    if (process.argv[2] !== '__daemon') process.exit(code)
+    // __daemon / run 自管生命周期，不主动退出；其余命令按返回码退出
+    if (!SELF_MANAGED.has(process.argv[2] ?? '')) process.exit(code)
   })
   .catch((err: unknown) => {
     console.error(err)

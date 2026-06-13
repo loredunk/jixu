@@ -1,5 +1,12 @@
 export { ClaudeCodeAdapter } from './adapter.js'
-export { classifyHookPayload, classifyLogLine } from './classifier.js'
+export { classifyHookPayload, classifyLogLine, classifyStreamLine } from './classifier.js'
+export {
+  nodePtySpawner,
+  claudeBin,
+  newSessionId,
+  buildClaudeArgs,
+} from './pty.js'
+export type { PtyHandle, PtySpawner, PtySpawnOptions } from './pty.js'
 export { readJobFile, sessionIdFromTranscriptPath } from './session.js'
 export {
   getUsage,

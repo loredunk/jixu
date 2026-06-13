@@ -7,6 +7,9 @@
   "dependencies": {
     "@jixu/core": "*"
   },
+  "optionalDependencies": {
+    "node-pty": "^1.0.0"
+  },
   "scripts": {
     "build": "tsc -b"
   }

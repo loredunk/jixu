@@ -72,6 +72,25 @@ export function classifyLogLine(line: string): JixuEvent | null {
   return null
 }
 
+/**
+ * 从交互式 PTY 输出的单行文本分类中断（M3，供 `jixu run` supervisor 用）。
+ * 先看连接层，再看应用层错误关键字。交互输出一般不含结构化 resets_at，
+ * RateLimited 不带 resets_at，由 supervisor 调 usage API 补齐。
+ */
+export function classifyStreamLine(line: string): JixuEvent | null {
+  const conn = classifyLogLine(line)
+  if (conn) return conn
+  if (/overload/i.test(line)) return { type: 'ApiError', reason: 'overloaded', raw: line }
+  if (/rate.?limit/i.test(line)) return { type: 'RateLimited', raw: line }
+  if (/unauthorized|authentication_error|invalid api key|\b401\b/i.test(line)) {
+    return { type: 'ApiError', reason: 'auth_failed', raw: line }
+  }
+  if (/billing|payment required|\b402\b/i.test(line)) {
+    return { type: 'ApiError', reason: 'billing_failed', raw: line }
+  }
+  return null
+}
+
 // ── 内部工具 ────────────────────────────────────────────────────────────────
 
 function getNestedString(obj: Record<string, unknown>, path: string[]): string | undefined {
