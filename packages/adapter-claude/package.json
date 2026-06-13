@@ -2,15 +2,31 @@
   "name": "@jixu/adapter-claude",
   "version": "0.1.0",
   "description": "Claude Code 适配器",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/loredunk/jixu.git",
+    "directory": "packages/adapter-claude"
+  },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
-    "@jixu/core": "*"
+    "@jixu/core": "^0.1.0"
   },
   "optionalDependencies": {
     "node-pty": "^1.0.0"
   },
   "scripts": {
-    "build": "tsc -b"
+    "build": "tsc -b",
+    "prepublishOnly": "npm run build"
   }
 }

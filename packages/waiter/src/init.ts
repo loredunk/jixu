@@ -25,9 +25,10 @@ const PLUGIN_FILES = ['manifest.json', 'hooks.json', 'stop-failure.sh'] as const
 export function resolveHookScriptsDir(fromDir: string = __dirname): string | undefined {
   const candidates = [
     process.env['JIXU_HOOK_SCRIPTS_DIR'],
-    // packages/waiter/src 或 packages/waiter/dist → packages/hook-scripts
+    // monorepo：packages/waiter/src 或 packages/waiter/dist → packages/hook-scripts
     resolve(fromDir, '..', '..', 'hook-scripts'),
-    // 已打包进 jixu 包内的场景
+    // 已发布的 jixu 包：dist 同级的 plugin/（由 prepack 的 bundle-plugin 生成）
+    resolve(fromDir, '..', 'plugin'),
     resolve(fromDir, '..', 'hook-scripts'),
   ].filter((p): p is string => typeof p === 'string')
 

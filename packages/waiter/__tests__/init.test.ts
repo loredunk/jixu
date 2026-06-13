@@ -1,5 +1,5 @@
 import { describe, test, expect, afterEach } from 'vitest'
-import { mkdtempSync, existsSync, statSync, rmSync } from 'node:fs'
+import { mkdtempSync, existsSync, statSync, rmSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { installHookPlugin, resolveHookScriptsDir } from '../src/init'
@@ -68,6 +68,24 @@ describe('resolveHookScriptsDir()', () => {
     } finally {
       if (prev === undefined) delete process.env['JIXU_HOOK_SCRIPTS_DIR']
       else process.env['JIXU_HOOK_SCRIPTS_DIR'] = prev
+    }
+  })
+
+  test('发布布局：从 dist 同级的 plugin/ 解析（bundle-plugin 产物）', () => {
+    const prev = process.env['JIXU_HOOK_SCRIPTS_DIR']
+    delete process.env['JIXU_HOOK_SCRIPTS_DIR']
+    const root = mkdtempSync(join(tmpdir(), 'jixu-pub-'))
+    created.push(root)
+    // 模拟 node_modules/jixu/{dist,plugin}，且不存在 ../../hook-scripts
+    const dist = join(root, 'jixu', 'dist')
+    const plugin = join(root, 'jixu', 'plugin')
+    mkdirSync(dist, { recursive: true })
+    mkdirSync(plugin, { recursive: true })
+    writeFileSync(join(plugin, 'manifest.json'), '{}')
+    try {
+      expect(resolveHookScriptsDir(dist)).toBe(plugin)
+    } finally {
+      if (prev !== undefined) process.env['JIXU_HOOK_SCRIPTS_DIR'] = prev
     }
   })
 })
