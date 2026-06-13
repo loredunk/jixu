@@ -76,6 +76,8 @@ export interface LogTailerOptions {
   filePath: string
   /** 命中连接层错误时回调（waiter 据此写 job 文件或直接喂决策引擎） */
   onEvent: (event: JixuEvent, line: string) => void
+  /** 每读到一行都回调（waiter 用作 watchdog 的活跃信号） */
+  onLine?: (line: string) => void
   pollIntervalMs?: number
   /** true 时从文件头开始扫描；默认 false 只关注启动后新增的行 */
   fromStart?: boolean
@@ -88,6 +90,7 @@ export interface LogTailerOptions {
 export class LogTailer {
   private readonly filePath: string
   private readonly onEvent: (event: JixuEvent, line: string) => void
+  private readonly onLine: ((line: string) => void) | undefined
   private readonly pollIntervalMs: number
   private readonly decoder = new StringDecoder('utf8')
   private readonly scanner: LineScanner
@@ -97,8 +100,10 @@ export class LogTailer {
   constructor(opts: LogTailerOptions) {
     this.filePath = opts.filePath
     this.onEvent = opts.onEvent
+    this.onLine = opts.onLine
     this.pollIntervalMs = opts.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS
     this.scanner = createLineScanner((line) => {
+      this.onLine?.(line)
       const event = classifyLogLine(line)
       if (event) this.onEvent(event, line)
     })
