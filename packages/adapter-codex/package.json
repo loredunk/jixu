@@ -2,8 +2,8 @@
   "name": "@jixu/adapter-codex",
   "version": "0.1.0",
   "description": "Codex 适配器（占位，M3 实现）",
-  "main": "src/index.ts",
-  "types": "src/index.ts",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "dependencies": {
     "@jixu/core": "*"
   },

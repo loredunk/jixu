@@ -19,7 +19,10 @@ export function classifyHookPayload(raw: string): JixuEvent | null {
 
     if (errorType === 'rate_limit_error' || /rate.limit/i.test(message)) {
       const resets_at = extractResetsAt(parsed, raw)
-      return { type: 'RateLimited', resets_at, raw }
+      // exactOptionalPropertyTypes：resets_at 缺失时不写该字段，而非赋 undefined
+      return resets_at !== undefined
+        ? { type: 'RateLimited', resets_at, raw }
+        : { type: 'RateLimited', raw }
     }
 
     if (errorType === 'authentication_error' || /auth|unauthorized|invalid.*key/i.test(message)) {
@@ -46,7 +49,10 @@ export function classifyHookPayload(raw: string): JixuEvent | null {
     return { type: 'ApiError', reason: 'overloaded', raw }
   }
   if (/rate.?limit/i.test(raw)) {
-    return { type: 'RateLimited', resets_at: extractResetsAtFromText(raw), raw }
+    const resets_at = extractResetsAtFromText(raw)
+    return resets_at !== undefined
+      ? { type: 'RateLimited', resets_at, raw }
+      : { type: 'RateLimited', raw }
   }
   if (/auth|unauthorized/i.test(raw)) {
     return { type: 'ApiError', reason: 'auth_failed', raw }

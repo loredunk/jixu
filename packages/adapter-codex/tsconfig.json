@@ -2,10 +2,8 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "outDir": "dist",
-    "rootDir": "src",
-    "paths": {
-      "@jixu/core": ["../core/src/index.ts"]
-    }
+    "rootDir": "src"
   },
+  "references": [{ "path": "../core" }],
   "include": ["src"]
 }
