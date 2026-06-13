@@ -30,6 +30,22 @@ export interface ExecResult {
 const realSleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms))
 
+/**
+ * resume 失败（如 claude 进程非零退出）只记日志、不抛出：
+ * 这一次仍算一次「续接尝试」，由 guard 计数兜底，避免对坏掉的会话无限重试。
+ */
+async function tryResume(
+  adapter: IToolAdapter,
+  sessionId: string,
+  log: Logger,
+): Promise<void> {
+  try {
+    await adapter.resume('headless', sessionId)
+  } catch (err) {
+    log(`[${sessionId}] resume 失败：${String(err)}`)
+  }
+}
+
 export async function executeDecision(
   decision: Decision,
   ctx: ExecuteContext,
@@ -45,14 +61,14 @@ export async function executeDecision(
       const waitMs = Math.max(decision.until - now(), 0)
       log(`[${ctx.sessionId}] sleep ${Math.round(waitMs / 1000)}s 后 resume（限额重置）`)
       await sleep(waitMs)
-      await adapter.resume('headless', ctx.sessionId)
+      await tryResume(adapter, ctx.sessionId, log)
       return { resumed: true, stopped: false }
     }
 
     case 'backoff_resume': {
       log(`[${ctx.sessionId}] 退避 ${Math.round(decision.delayMs / 1000)}s 后 resume`)
       await sleep(decision.delayMs)
-      await adapter.resume('headless', ctx.sessionId)
+      await tryResume(adapter, ctx.sessionId, log)
       return { resumed: true, stopped: false }
     }
 
@@ -60,11 +76,15 @@ export async function executeDecision(
       // ADR-006：死连接/停滞必须先 kill 原进程再起新进程
       if (ctx.pid !== undefined) {
         log(`[${ctx.sessionId}] kill pid ${ctx.pid} 后新进程 resume`)
-        await adapter.kill(ctx.pid)
+        try {
+          await adapter.kill(ctx.pid)
+        } catch (err) {
+          log(`[${ctx.sessionId}] kill 失败：${String(err)}`)
+        }
       } else {
         log(`[${ctx.sessionId}] 无 pid，跳过 kill 直接 resume`)
       }
-      await adapter.resume('headless', ctx.sessionId)
+      await tryResume(adapter, ctx.sessionId, log)
       return { resumed: true, stopped: false }
     }
 

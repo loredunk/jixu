@@ -8,6 +8,6 @@
     "@jixu/core": "*"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json"
+    "build": "tsc -b"
   }
 }

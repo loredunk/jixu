@@ -105,9 +105,11 @@ export class Daemon {
     this.log('守护进程停止')
   }
 
-  /** 串行化所有事件处理，避免并发改 guardState */
+  /** 串行化所有事件处理，避免并发改 guardState；单个事件出错只记日志，不断链 */
   enqueue(fn: () => Promise<void>): Promise<void> {
-    this.chain = this.chain.then(fn, fn)
+    this.chain = this.chain.then(() =>
+      fn().catch((err: unknown) => this.log(`[handler] 事件处理出错：${String(err)}`)),
+    )
     return this.chain
   }
 

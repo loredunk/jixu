@@ -83,4 +83,16 @@ describe('executeDecision()', () => {
     expect(adapter.calls.kill).toEqual([])
     expect(result).toEqual({ resumed: false, stopped: false })
   })
+
+  test('resume 抛错 → 不外抛，仍记为一次尝试（resumed=true）', async () => {
+    const adapter = makeMockAdapter()
+    adapter.resume = async () => {
+      throw new Error('claude 进程退出码 1')
+    }
+    const result = await executeDecision({ action: 'backoff_resume', delayMs: 0 }, { sessionId: 'S' }, {
+      adapter,
+      sleep: async () => {},
+    })
+    expect(result).toEqual({ resumed: true, stopped: false })
+  })
 })

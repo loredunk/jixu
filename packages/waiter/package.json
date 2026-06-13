@@ -11,9 +11,9 @@
     "@jixu/core": "*"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "start": "tsx src/main.ts start",
-    "stop": "tsx src/main.ts stop",
-    "status": "tsx src/main.ts status"
+    "build": "tsc -b",
+    "start": "node dist/main.js start",
+    "stop": "node dist/main.js stop",
+    "status": "node dist/main.js status"
   }
 }

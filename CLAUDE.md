@@ -16,10 +16,12 @@
 | 里程碑 | 内容摘要 | 状态 |
 |--------|----------|------|
 | **M1** | 契约类型 + 决策核心(TDD) + CC 适配器(headless) + hook 脚本 + demo | ✅ **完成** |
-| **M2** | log-tailer + OAuth usage API + 完整 Waiter daemon | ⬜ 待开始 |
+| **M2** | log-tailer + OAuth usage API + 完整 Waiter daemon | ✅ **完成** |
 | **M3** | PTY 模式 + Codex 占位 + npm/plugin 发布配置 | ⬜ 待开始 |
 
-**当前任务（M2）**：log-tailer（tail CC debug log，抓 ECONNRESET）、OAuth usage API（resets_at 来源 #1）、完整 Waiter daemon（start/stop/status/init 守护进程）。
+**当前任务（M3）**：PTY 交互式续接（node-pty）、CodexAdapter 落地、npm 包与 CC plugin 的发布配置（见 ADR-007）。
+
+> 同时在 M2 修复了 M1 遗留的 `tsc -b` 构建（改用 TS 项目引用），`npm run build` / `npm test` 现均通过（131 个单测）。
 
 ---
 
@@ -57,24 +59,33 @@ jixu/
 │   │
 │   ├── adapter-claude/                ← @jixu/adapter-claude（CC 适配器）
 │   │   ├── src/
-│   │   │   ├── adapter.ts             ← 实现 IToolAdapter（headless resume）
-│   │   │   ├── usage-api.ts           ← OAuth usage API（M2）
-│   │   │   ├── log-tailer.ts          ← tail CC debug log，抓 ECONNRESET（M2）
+│   │   │   ├── adapter.ts             ← 实现 IToolAdapter（headless resume + usage）
+│   │   │   ├── classifier.ts          ← hook payload / 日志行 → JixuEvent 分类
+│   │   │   ├── usage-api.ts           ← OAuth usage API + statusline 缓存兜底（resets_at）
+│   │   │   ├── log-tailer.ts          ← tail CC debug log，抓 ECONNRESET（弱通道）
 │   │   │   └── session.ts             ← session_id 提取
 │   │   └── __tests__/
-│   │       ├── adapter.test.ts        ← fixture 驱动的错误分类单测
-│   │       └── log-tailer.test.ts     ← M2
+│   │       ├── classifier.test.ts     ← fixture 驱动的错误分类单测
+│   │       ├── usage-api.test.ts      ← resets_at 三级来源解析
+│   │       └── log-tailer.test.ts     ← 行扫描器 + tail 集成
 │   │
 │   ├── adapter-codex/                 ← @jixu/adapter-codex（占位，M3）
 │   │   └── src/adapter.ts             ← 全部方法 throw NotImplementedError
 │   │
 │   ├── waiter/                        ← jixu（常驻守护进程，npm 主包）
 │   │   ├── src/
-│   │   │   ├── main.ts                ← CLI：start / stop / status / init
-│   │   │   ├── watcher.ts             ← FSWatch job 文件目录
-│   │   │   ├── watchdog.ts            ← N 秒无新 token → Stalled
-│   │   │   └── process-mgr.ts         ← PID lock + spawn + kill
-│   │   └── __tests__/
+│   │   │   ├── main.ts                ← CLI：start / stop / status / init（+ __daemon）
+│   │   │   ├── daemon.ts              ← 编排 watcher+tailer+watchdog → 引擎 → executor
+│   │   │   ├── watcher.ts             ← FSWatch job 目录 + 归一化 + 去重
+│   │   │   ├── watchdog.ts            ← N 秒无新活跃 → Stalled
+│   │   │   ├── process-mgr.ts         ← PID lock + kill+wait + detached spawn
+│   │   │   ├── executor.ts            ← Decision → adapter 调用（sleep/kill_resume/…）
+│   │   │   ├── init.ts                ← 安装 hook plugin 到 ~/.claude/plugins/jixu
+│   │   │   ├── paths.ts               ← XDG 路径集中
+│   │   │   ├── state.ts               ← waiter.state.json 读写（供 status）
+│   │   │   └── log.ts                 ← 追加式 waiter.log
+│   │   └── __tests__/                 ← process-mgr / watchdog / watcher /
+│   │                                     executor / daemon / init 单测 + helpers
 │   │
 │   └── hook-scripts/                  ← CC Plugin（hook 脚本）
 │       ├── manifest.json
@@ -154,7 +165,8 @@ npm run build        # 编译所有包
 
 | 问题 | 关联里程碑 | 说明 |
 |------|-----------|------|
-| CC debug log 的精确路径 | M2 | 需要在真实环境中确认 CC 写 log 的位置 |
-| Statusline 缓存文件格式对齐 | M2 | 需要和 statusline 插件约定 JSON schema |
+| CC debug log 的精确路径 | M2→M3 | 已实现：默认 `~/.claude/logs` 取最新 `*.log`，可经 `DaemonOptions.logDir` 覆盖；真实路径与日志→session 归因仍需在真实环境确认 |
+| Statusline 缓存文件格式对齐 | M2→M3 | 已约定 jixu 端 schema：`~/.local/share/jixu/cache/rate_limits.json`，含 `timestamp`(ms) + `rate_limits.five_hour.resets_at`，30 分钟内有效；待与 statusline 插件落地对齐 |
+| 弱通道 ConnDead 的 session 归因 | M3 | 当前归因到「最近活跃 session」，需更精确的 log↔session 映射 |
 | PTY 库选型（node-pty vs portable-pty）| M3 | 两者都支持 macOS/Linux，portable-pty 更轻量 |
 | npm 包名是否已被占用 | M3 | 发布前需确认 `jixu` 和 `@jixu/core` 可用 |
