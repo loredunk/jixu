@@ -7,6 +7,7 @@ import {
   type JixuEvent,
 } from '@jixu/core'
 import { createLineScanner, classifyStreamLine } from '@jixu/adapter-claude'
+import type { Logger } from './log.js'
 
 /**
  * `jixu run` 的前台托管核心（M3）。
@@ -63,6 +64,13 @@ export interface SupervisorDeps {
   nudgeQuietMs?: number
   /** 多久无任何输出判定为静默挂起（Stalled）→ kill 重启；默认 120s，0 禁用 */
   stallMs?: number
+  /**
+   * ConnDead 同会话「继续」试探的观察窗口（ms）：注入「继续」后这段时间内
+   * 未再报错则判定恢复，期间再报错则升级为 kill 重启。默认 8s，env JIXU_PROBE_ESCALATE_MS。
+   */
+  probeEscalateMs?: number
+  /** 事件日志（检测/决策/试探/续接/结局）；不传则不落盘。jixu run 注入 run.log。 */
+  logger?: Logger
   setTimer?: (fn: () => void, ms: number) => TimerHandle
   clearTimer?: (h: TimerHandle) => void
 }
@@ -81,6 +89,8 @@ export class Supervisor {
   private readonly continuePrompt: string
   private readonly nudgeQuietMs: number
   private readonly stallMs: number
+  private readonly probeEscalateMs: number
+  private readonly logger: Logger | undefined
   private readonly setTimer: (fn: () => void, ms: number) => TimerHandle
   private readonly clearTimer: (h: TimerHandle) => void
   private readonly classify: (line: string) => JixuEvent | null
@@ -95,8 +105,15 @@ export class Supervisor {
     this.continuePrompt = deps.continuePrompt ?? process.env['JIXU_CONTINUE_PROMPT'] ?? '继续'
     this.nudgeQuietMs = deps.nudgeQuietMs ?? (Number(process.env['JIXU_NUDGE_QUIET_MS']) || 800)
     this.stallMs = deps.stallMs ?? (Number(process.env['JIXU_STALL_MS']) || 120_000)
+    this.probeEscalateMs =
+      deps.probeEscalateMs ?? (Number(process.env['JIXU_PROBE_ESCALATE_MS']) || 8_000)
+    this.logger = deps.logger
     this.setTimer = deps.setTimer ?? ((fn, ms) => setTimeout(fn, ms))
     this.clearTimer = deps.clearTimer ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>))
+  }
+
+  private log(msg: string): void {
+    this.logger?.(msg)
   }
 
   /** 跑到 CC 正常退出（返回其退出码）或停手（返回 1）。 */
@@ -121,6 +138,7 @@ export class Supervisor {
 
       const event = await this.enrich(outcome.event)
       const decision = decide(event, sessionId, guard, this.maxRetriesOpt())
+      this.log(`[${sessionId}] 决策 ${event.type} → ${decision.action}`)
 
       switch (decision.action) {
         case 'stop':
@@ -130,6 +148,7 @@ export class Supervisor {
               ? '连续自动续接已达上限，停手。请手动检查后再 jixu run。'
               : `遇到不可自动恢复的错误（${describe(event)}），停手。`,
           )
+          this.log(`[${sessionId}] 停手（${decision.reason}）`)
           return 1
         case 'sleep': {
           const waitMs = Math.max(decision.until - this.now(), 0)
@@ -166,6 +185,7 @@ export class Supervisor {
         ? createContinueNudger({
             write: (d) => {
               this.deps.io.status(`就绪，自动发送「${this.continuePrompt}」继续…`)
+              this.log(`[${sessionId}] 续接就绪，注入「${this.continuePrompt}」`)
               handle.write(d)
             },
             prompt: this.continuePrompt,
@@ -177,6 +197,21 @@ export class Supervisor {
 
       let detected: JixuEvent | null = null
 
+      // ── 同会话「继续」试探（仅 ConnDead 网络错误；ADR-006 修订：jixu run 先试探后 kill）──
+      // CC 报网络错后通常不退出、仍停在提示符，可先补发「继续」试探；试探窗口内未再报错
+      // 判定恢复，期间再报错则升级为 kill 重启（走既有 kill_resume 路径）。
+      const probeEnabled = this.continuePrompt !== '' && this.probeEscalateMs > 0
+      let probing = false
+      let probeSent = false
+      let probeNudger: Nudger | undefined
+      let recoverTimer: TimerHandle | undefined
+      const clearRecover = (): void => {
+        if (recoverTimer !== undefined) {
+          this.clearTimer(recoverTimer)
+          recoverTimer = undefined
+        }
+      }
+
       // 静默挂起看门狗：长时间无输出（既不报错也不退出）→ 当作 Stalled，kill 重启
       const stallWatch =
         this.stallMs > 0
@@ -185,7 +220,10 @@ export class Supervisor {
                 if (detected) return
                 detected = { type: 'Stalled' }
                 nudger?.cancel()
+                probeNudger?.cancel()
+                clearRecover()
                 this.deps.io.status(`${Math.round(this.stallMs / 1000)}s 无输出，判定停滞，重启续接…`)
+                this.log(`[${sessionId}] ${Math.round(this.stallMs / 1000)}s 无输出 → Stalled，kill 重启`)
                 handle.kill()
               },
               ms: this.stallMs,
@@ -194,31 +232,99 @@ export class Supervisor {
             })
           : undefined
 
+      // 升级：试探无效，按 ADR-006 kill 原进程 → 既有 onExit→fail→decide(kill_resume)
+      const escalate = (ev: JixuEvent): void => {
+        if (detected) return
+        detected = ev
+        nudger?.cancel()
+        probeNudger?.cancel()
+        clearRecover()
+        stallWatch?.cancel()
+        this.deps.io.status(`试探无效，重启并续接…`)
+        this.log(`[${sessionId}] 试探无效 → kill 重启续接`)
+        handle.kill()
+      }
+
+      // 开始一次同会话试探：补发「继续」，并武装恢复观察窗口
+      const startProbe = (ev: JixuEvent): void => {
+        probing = true
+        probeSent = false
+        nudger?.cancel() // 启动 nudger 与试探二选一，避免双重注入
+        this.deps.io.status(`检测到连接中断，先向当前会话补发「${this.continuePrompt}」试探…`)
+        this.log(
+          `[${sessionId}] 检测到 ${ev.type}（${truncate('raw' in ev ? ev.raw : undefined)}）→ 先补发「${this.continuePrompt}」试探`,
+        )
+        probeNudger = createContinueNudger({
+          write: (d) => {
+            probeSent = true
+            this.deps.io.status(`已补发「${this.continuePrompt}」，观察是否恢复…`)
+            this.log(`[${sessionId}] 试探：注入「${this.continuePrompt}」`)
+            handle.write(d)
+          },
+          prompt: this.continuePrompt,
+          quietMs: this.nudgeQuietMs,
+          setTimer: this.setTimer,
+          clearTimer: this.clearTimer,
+        })
+        probeNudger.bump()
+        recoverTimer = this.setTimer(() => {
+          recoverTimer = undefined
+          if (detected || !probing) return
+          // 试探窗口内未再报错 → 视为恢复，允许后续新事件再次试探
+          probing = false
+          probeSent = false
+          probeNudger?.cancel()
+          this.deps.io.status(`试探后未再报错，会话已恢复`)
+          this.log(`[${sessionId}] 试探成功，会话已恢复`)
+        }, this.probeEscalateMs)
+      }
+
       const scanner = createLineScanner((line) => {
         if (detected) return
         const ev = this.classify(line)
-        if (ev) {
-          detected = ev
-          nudger?.cancel() // 正在失败，别再注入
-          stallWatch?.cancel()
-          // 命中中断：CC 可能仍挂着，主动 kill 触发干净重启（ADR-006）
-          handle.kill()
+        if (!ev) return
+        if (probeEnabled && ev.type === 'ConnDead') {
+          if (!probing) {
+            startProbe(ev)
+          } else if (probeSent) {
+            escalate(ev) // 试探已发出后又报错 → 升级
+          }
+          // probing 但「继续」尚未发出：原报错余波，忽略
+          return
         }
+        // 非 ConnDead（或试探禁用）：直接 kill → decide（overloaded/rate_limit 等）
+        detected = ev
+        nudger?.cancel()
+        probeNudger?.cancel()
+        clearRecover()
+        stallWatch?.cancel()
+        // 命中中断：CC 可能仍挂着，主动 kill 触发干净重启（ADR-006）
+        handle.kill()
       })
 
       handle.onData((d) => {
         this.deps.io.write(d)
         scanner.push(d)
         nudger?.bump() // 去抖：每来一段输出就重置「安静」计时
+        probeNudger?.bump()
         stallWatch?.bump()
       })
       handle.onExit(({ exitCode }) => {
         this.current = undefined
         nudger?.cancel()
+        probeNudger?.cancel()
+        clearRecover()
         stallWatch?.cancel()
-        if (detected) resolve({ kind: 'fail', event: detected, exitCode })
-        else if (exitCode === 0) resolve({ kind: 'clean', exitCode })
-        else resolve({ kind: 'fail', event: { type: 'ConnDead', raw: `claude 退出码 ${exitCode}` }, exitCode })
+        if (detected) {
+          this.log(`[${sessionId}] 本轮结局：fail（${detected.type}）exit=${exitCode}`)
+          resolve({ kind: 'fail', event: detected, exitCode })
+        } else if (exitCode === 0) {
+          this.log(`[${sessionId}] 本轮结局：clean exit=0`)
+          resolve({ kind: 'clean', exitCode })
+        } else {
+          this.log(`[${sessionId}] 本轮结局：fail（非零退出 ${exitCode}）`)
+          resolve({ kind: 'fail', event: { type: 'ConnDead', raw: `claude 退出码 ${exitCode}` }, exitCode })
+        }
       })
 
       // CC 启动后可能一段时间无输出，先各武装一次
@@ -324,6 +430,12 @@ export function createContinueNudger(opts: {
 function fmtMs(ms: number): string {
   const s = Math.round(ms / 1000)
   return s >= 60 ? `${Math.round(s / 60)}m` : `${s}s`
+}
+
+/** 截断日志里的 raw 报错串，避免单行过长 */
+function truncate(s: string | undefined, max = 120): string {
+  if (!s) return ''
+  return s.length > max ? s.slice(0, max) + '…' : s
 }
 
 function describe(event: JixuEvent): string {

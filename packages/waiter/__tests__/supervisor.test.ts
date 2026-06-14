@@ -248,6 +248,145 @@ describe('Supervisor.run()', () => {
   })
 })
 
+// ── 同会话试探（ConnDead 混合续接） ──────────────────────────────────────────
+const tick = (): Promise<void> => new Promise((r) => setImmediate(r))
+
+/** 可控 launch：检测后不自动退出、捕获 write、可手动 emit/exit（驱动试探流程） */
+function controllableLaunch(): {
+  launch: LaunchFn
+  launches: Array<{ resume: boolean }>
+  writes: string[]
+  emit: (line: string) => void
+  exit: (code: number) => void
+  killed: () => boolean
+} {
+  const launches: Array<{ resume: boolean }> = []
+  const writes: string[] = []
+  let dataCb: ((d: string) => void) | undefined
+  let exitCb: ((e: { exitCode: number }) => void) | undefined
+  let wasKilled = false
+  const launch: LaunchFn = (_sid, resume) => {
+    launches.push({ resume })
+    dataCb = undefined
+    exitCb = undefined
+    wasKilled = false
+    return {
+      onData: (cb) => void (dataCb = cb),
+      onExit: (cb) => void (exitCb = cb),
+      write: (d) => void writes.push(d),
+      resize: () => {},
+      kill: () => {
+        wasKilled = true
+        exitCb?.({ exitCode: 143 })
+      },
+    }
+  }
+  return {
+    launch,
+    launches,
+    writes,
+    emit: (line) => dataCb?.(line.endsWith('\n') ? line : line + '\n'),
+    exit: (code) => exitCb?.({ exitCode: code }),
+    killed: () => wasKilled,
+  }
+}
+
+function makeProbeSupervisor(ctrl: ReturnType<typeof controllableLaunch>): {
+  run: () => Promise<number>
+  io: ReturnType<typeof fakeIo>
+  timers: ReturnType<typeof timerHarness>
+  logs: string[]
+} {
+  const io = fakeIo()
+  const timers = timerHarness()
+  const logs: string[] = []
+  const sup = new Supervisor({
+    launch: ctrl.launch,
+    io,
+    sleep: () => Promise.resolve(),
+    now: () => NOW,
+    newSessionId: () => 'S',
+    setTimer: timers.setTimer,
+    clearTimer: timers.clearTimer,
+    nudgeQuietMs: 800,
+    probeEscalateMs: 8_000,
+    stallMs: 100_000, // 高到不在用例里触发
+    logger: (m) => logs.push(m),
+  })
+  return { run: () => sup.run(), io, timers, logs }
+}
+
+const NET_ERR = 'API Error: Unable to connect to API (ConnectionRefused)'
+
+describe('Supervisor 同会话试探（ConnDead）', () => {
+  test('检测到 ConnDead → 同会话注入「继续」、不重启；窗口内无报错 → 恢复', async () => {
+    const ctrl = controllableLaunch()
+    const { run, io, timers, logs } = makeProbeSupervisor(ctrl)
+    const p = run()
+    await tick() // 等 fresh 启动
+    ctrl.emit(NET_ERR) // 命中 ConnDead → 进入试探
+    timers.fireMs(800) // 试探去抖到点 → 注入「继续」
+
+    expect(ctrl.writes).toEqual(['继续\r']) // 向当前会话补发了一次
+    expect(ctrl.killed()).toBe(false) // 没有 kill
+    expect(ctrl.launches).toHaveLength(1) // 没有重启
+    expect(io.statuses.join(' ')).toMatch(/补发「继续」试探/)
+
+    timers.fireMs(8_000) // 恢复观察窗口到点 → 判定恢复
+    expect(logs.join('\n')).toMatch(/试探成功/)
+
+    ctrl.exit(0) // 会话随后正常结束
+    expect(await p).toBe(0)
+    expect(ctrl.launches).toHaveLength(1) // 全程只启动一次
+  })
+
+  test('试探后再报错 → 升级 kill 重启，并在新进程注入「继续」', async () => {
+    const ctrl = controllableLaunch()
+    const { run, timers, logs } = makeProbeSupervisor(ctrl)
+    const p = run()
+    await tick()
+    ctrl.emit(NET_ERR) // 进入试探
+    timers.fireMs(800) // 注入试探「继续」
+    expect(ctrl.writes).toEqual(['继续\r'])
+
+    ctrl.emit(NET_ERR) // 试探后又报错 → escalate → kill → onExit → 决策 kill_resume
+    await tick() // 等 run() 循环起新进程（resume=true）
+    expect(ctrl.launches.map((l) => l.resume)).toEqual([false, true])
+
+    timers.fireMs(800) // 新进程续接就绪 → 注入「继续」
+    expect(ctrl.writes).toEqual(['继续\r', '继续\r']) // 试探 + 续接各一次
+    expect(logs.join('\n')).toMatch(/试探无效/)
+
+    ctrl.exit(0)
+    expect(await p).toBe(0)
+  })
+
+  test('continuePrompt 为空 → 禁用试探，ConnDead 直接 kill 重启', async () => {
+    const ctrl = controllableLaunch()
+    const io = fakeIo()
+    const timers = timerHarness()
+    const sup = new Supervisor({
+      launch: ctrl.launch,
+      io,
+      sleep: () => Promise.resolve(),
+      now: () => NOW,
+      newSessionId: () => 'S',
+      setTimer: timers.setTimer,
+      clearTimer: timers.clearTimer,
+      continuePrompt: '', // 关掉「继续」=> 关掉试探
+      stallMs: 100_000,
+    })
+    const p = sup.run()
+    await tick()
+    ctrl.emit(NET_ERR) // 试探禁用 → 直接 kill
+    expect(ctrl.killed()).toBe(true)
+    await tick()
+    expect(ctrl.launches.map((l) => l.resume)).toEqual([false, true]) // 直接重启续接
+    ctrl.exit(0)
+    expect(await p).toBe(0)
+  })
+})
+
 // ── createContinueNudger ─────────────────────────────────────────────────────
 describe('createContinueNudger()', () => {
   function setup(prompt = '继续') {

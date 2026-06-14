@@ -14,7 +14,7 @@ import type { JixuEvent } from '@jixu/core'
 
 // 连接层错误关键字（弱通道核心）。刻意避开过宽的词（如裸 "terminated"）以减少误判。
 const CONN_RE =
-  /ECONNRESET|socket hang up|connection reset|socket closed|stream (disconnected|closed|error)|ETIMEDOUT|ECONNREFUSED|connection (refused|timed out|closed)|fetch failed|network error/i
+  /ECONNRESET|socket hang up|connection reset|socket closed|stream (disconnected|closed|error)|ETIMEDOUT|ECONNREFUSED|ConnectionRefused|connection (refused|timed out|closed)|fetch failed|network error|403 request not allowed|unable to connect to api/i
 
 /** 连接层错误 → ConnDead；否则 null。用于在任意纯文本行上做连接层判定。 */
 export function classifyLogLine(line: string): JixuEvent | null {

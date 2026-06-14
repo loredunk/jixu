@@ -32,3 +32,32 @@ ConnDead / Stalled 决策路径：
 - `process-mgr.ts` 必须实现 kill+等待退出的逻辑，不能只发信号
 - 决策引擎中 `ConnDead`/`Stalled` 对应的 action 为 `kill_resume`，与 `backoff_resume` 严格区分
 - PTY 模式下同样适用：PTY 进程也需要 kill 后重新 spawn
+
+## 修订（2026-06-14）：`jixu run` 先试探、再 kill
+
+> 状态：**已接受**（补充本 ADR，不推翻原则）
+
+**背景（实测）**：Claude Code 2.1.177 遇到网络层错误（`403 Request not allowed`、
+`Unable to connect to API (ConnectionRefused)`）时**不退出、仍停在提示符**，连接池在下一次
+请求时会自行重建。此时直接 kill 重开偏重，且丢掉了当前存活会话。
+
+**决策**：仅在 **`jixu run` 前台托管**、且事件为**流式探测到的 `ConnDead`** 时，引入一次
+**同会话试探**作为 `kill_resume` 的前置快速路径：
+
+```
+检测到 ConnDead（进程仍存活）
+  → 向当前会话补发一次「继续」+回车（试探）
+  → 观察窗口 probeEscalateMs（默认 8s，env JIXU_PROBE_ESCALATE_MS）：
+      · 窗口内未再报错  → 判定恢复，继续原会话（不 kill）
+      · 窗口内再次报错  → 升级：按本 ADR kill 原进程 → 新进程 --resume
+  · 试探后会话纯静默无输出 → 由停滞看门狗（Stalled）兜底 kill
+```
+
+**为何"窗口内无报错=恢复"而非"超时即 kill"**：注入「继续」后 PTY 会回显该串，无法可靠地把
+"回显"与"真实恢复输出"区分开，故不以"出现干净输出"作正向恢复信号；改以**是否再次报错**作判据
+——网络仍断时 CC 会立即再报错从而快速升级，网络已恢复时则平稳续跑。极端的"试探后彻底卡死"
+由独立的停滞看门狗收口。
+
+**边界**：本试探**只作用于 `jixu run`**（交互、进程存活才能补发按键）。
+daemon/headless 路径、以及升级后的重开，仍严格遵守本 ADR 的 kill+respawn 不变量。
+`continuePrompt` 为空串则禁用试探，`ConnDead` 直接走 kill+respawn。

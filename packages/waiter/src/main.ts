@@ -7,7 +7,8 @@ import { getProfile, parseToolFlag } from './tools.js'
 import { Supervisor, type SupervisorIo, type SupervisedPty } from './supervisor.js'
 import { installHookPlugin } from './init.js'
 import { readState } from './state.js'
-import { pidFilePath, logFilePath, stateFilePath } from './paths.js'
+import { createLogger } from './log.js'
+import { pidFilePath, logFilePath, runLogFilePath, stateFilePath } from './paths.js'
 import {
   readLivePid,
   acquireLock,
@@ -53,6 +54,11 @@ function cmdRun(): number {
   const spawner = nodePtySpawner() // 缺 node-pty 时这里抛友好错误
   const io = realIo()
 
+  // run 模式事件日志：检测/决策/试探/续接/结局都落到 run.log，便于回看续接过程
+  const runLog = runLogFilePath()
+  const logger = createLogger(runLog)
+  io.status(`日志：${runLog}`)
+
   const supervisor = new Supervisor({
     launch: (sessionId, resume, size): SupervisedPty => {
       const h = spawner.spawn(profile.bin(), profile.buildArgs({ sessionId, resume, extraArgs }), {
@@ -69,6 +75,7 @@ function cmdRun(): number {
       }
     },
     io,
+    logger,
     usage: () => profile.makeAdapter().usage(),
     newSessionId: profile.newSessionId,
     classifyStreamLine: profile.classifyStreamLine,

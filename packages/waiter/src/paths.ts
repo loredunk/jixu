@@ -22,6 +22,11 @@ export function logFilePath(home: string = homedir()): string {
   return join(jixuDir(home), 'waiter.log')
 }
 
+/** `jixu run` 前台托管的事件日志（与后台 waiter.log 分离，便于诊断续接过程） */
+export function runLogFilePath(home: string = homedir()): string {
+  return join(jixuDir(home), 'run.log')
+}
+
 export function stateFilePath(home: string = homedir()): string {
   return join(jixuDir(home), 'waiter.state.json')
 }

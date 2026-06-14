@@ -78,10 +78,14 @@ jixu stop               # 停止
 
 | 变量 | 默认 | 说明 |
 |------|------|------|
-| `JIXU_CONTINUE_PROMPT` | `继续` | 续接后注入的提示语；空串则只重开、不自动发送 |
+| `JIXU_CONTINUE_PROMPT` | `继续` | 续接/试探后注入的提示语；空串则只重开、不自动发送（也禁用同会话试探） |
 | `JIXU_NUDGE_QUIET_MS` | `800` | 判定「就绪」的静默时长（毫秒） |
 | `JIXU_STALL_MS` | `120000` | 多久无输出判定静默挂起 → kill 重启（`0` 禁用） |
+| `JIXU_PROBE_ESCALATE_MS` | `8000` | `jixu run` 检测到网络中断后，先补发「继续」试探的观察窗口；窗口内未再报错判定恢复，再报错则升级为 kill 重启（`0` 禁用试探，直接 kill） |
 | `JIXU_CLAUDE_BIN` / `JIXU_CODEX_BIN` | `claude` / `codex` | 自定义可执行文件路径 |
+
+> `jixu run` 的续接过程（检测/决策/试探/注入「继续」/结局）会写入 `~/.local/share/jixu/run.log`，
+> 可 `tail -f` 回看是否成功触发了续接。
 
 ## 开发
 

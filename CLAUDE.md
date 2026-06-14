@@ -20,9 +20,11 @@
 | **M3** | PTY 交互式续接（jixu run）+ Codex 占位 + npm/plugin 发布配置 | ✅ **完成** |
 | **Codex** | CodexAdapter 真正落地（classifier/usage/rollout-tailer/pty/session）+ ToolProfile 工具选择（`jixu run`/守护 `--tool codex`） | ✅ **完成** |
 
-**当前状态**：三个里程碑 + Codex 接入均完成。`npm run build` / `npm test` 均通过（**226 个单测**）。
+**当前状态**：三个里程碑 + Codex 接入均完成。`npm run build` / `npm test` 均通过（**238 个单测**）。
 
-下一步候选（无既定里程碑）：真实环境验证（CC hook/log/usage API 字段；**Codex 的 `exec --json` 事件、`rate_limits` 快照、rollout 记录嵌套字段**）、弱通道 log↔session 精确归因、首次 npm 发布（确认包名可用）。
+> **2026-06-14 增量**：实测对齐 Claude Code 2.1.177 真实网络报错串（`403 Request not allowed` / `Unable to connect to API (ConnectionRefused)` → `ConnDead`）；`jixu run` 新增同会话「继续」试探（ConnDead 先试探、不行再 kill 重开，见 ADR-006 修订）+ 事件日志 `~/.local/share/jixu/run.log`；postinstall 修复 node-pty `spawn-helper` 执行位。
+
+下一步候选（无既定里程碑）：真实环境验证（CC usage API 字段、daemon 弱通道 log 路径；**Codex 的 `exec --json` 事件、`rate_limits` 快照、rollout 记录嵌套字段**）、弱通道 log↔session 精确归因、首次 npm 发布（确认包名可用）。
 
 > M3 核心是 **`jixu run`**：用 PTY 在你当前终端里托管 Claude Code / Codex，中断时在同一窗口自动续接（见 ADR-002 的 forceContinue + PRD F6）。Codex 接入决策见 **ADR-008**。
 
@@ -90,7 +92,7 @@ jixu/
 │   │   ├── src/
 │   │   │   ├── main.ts                ← CLI：run / start / stop / status / init（+ __daemon）；解析 --tool
 │   │   │   ├── tools.ts               ← ToolProfile：claude/codex 工具选择收口（adapter/分类器/参数/tailer）
-│   │   │   ├── supervisor.ts          ← jixu run 前台托管循环（PTY 起 CC/Codex + 流监控 + 自动续接 + 停滞看门狗 + 注入「继续」）
+│   │   │   ├── supervisor.ts          ← jixu run 前台托管循环（PTY 起 CC/Codex + 流监控 + 同会话试探 + 自动续接 + 停滞看门狗 + 注入「继续」 + run.log）
 │   │   │   ├── daemon.ts              ← 编排 watcher+tailer+watchdog → 引擎 → executor（按 profile 选适配器/弱通道）
 │   │   │   ├── watcher.ts             ← FSWatch job 目录 + 归一化 + 去重
 │   │   │   ├── watchdog.ts            ← N 秒无新活跃 → Stalled

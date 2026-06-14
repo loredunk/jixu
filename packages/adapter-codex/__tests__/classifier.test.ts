@@ -53,6 +53,15 @@ describe('classifyCodexMessage()', () => {
     })
   })
 
+  test('403 Request not allowed / Unable to connect → ConnDead', () => {
+    expect(classifyCodexMessage('API Error: 403 Request not allowed')).toMatchObject({
+      type: 'ConnDead',
+    })
+    expect(classifyCodexMessage('Unable to connect to API (ConnectionRefused)')).toMatchObject({
+      type: 'ConnDead',
+    })
+  })
+
   test('普通文本 → null', () => {
     expect(classifyCodexMessage('Working on it…')).toBeNull()
   })

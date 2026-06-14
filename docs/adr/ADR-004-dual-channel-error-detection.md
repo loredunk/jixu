@@ -29,8 +29,10 @@ Matcher：/overloaded|rate.limit/i
 ```
 触发条件：连接层错误（hook 未触发或未携带有效信息时）
 监听目标：CC debug log（~/.claude/logs/ 或 stderr）
-Matcher：/ECONNRESET|socket closed|connection reset|read ECONNRESET/i
+Matcher：/ECONNRESET|socket hang up|connection reset|socket closed|403 Request not allowed|Unable to connect to API|ECONNREFUSED|ConnectionRefused/i
+        （2026-06-14 实测扩充：CC 2.1.177 断网/关 VPN 输出 403 Request not allowed、Unable to connect to API (ConnectionRefused)）
 产出：JobFile { event: ConnDead, sessionId }
+说明：classifyStreamLine 复用 classifyLogLine，故 `jixu run` 流式通道与弱通道共用此 Matcher
 ```
 
 ### 看门狗（Watchdog）

@@ -66,7 +66,13 @@ export function classifyHookPayload(raw: string): JixuEvent | null {
  * 返回 null 表示该行不含已知错误特征。
  */
 export function classifyLogLine(line: string): JixuEvent | null {
-  if (/ECONNRESET|socket hang up|connection reset|socket closed/i.test(line)) {
+  // 完整短语而非裸 "403"/"unable"，避免误判正常输出（如读到含 "403" 的文件内容）。
+  // 真实 CC 2.1.177 断网/关 VPN 输出：`403 Request not allowed` / `Unable to connect to API (ConnectionRefused)`。
+  if (
+    /ECONNRESET|socket hang up|connection reset|socket closed|403 Request not allowed|Unable to connect to API|ECONNREFUSED|ConnectionRefused/i.test(
+      line,
+    )
+  ) {
     return { type: 'ConnDead', raw: line }
   }
   return null

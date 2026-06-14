@@ -5,6 +5,7 @@
     "packages/*"
   ],
   "scripts": {
+    "postinstall": "node scripts/fix-node-pty-perms.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "build": "tsc -b packages/core packages/adapter-claude packages/adapter-codex packages/waiter",

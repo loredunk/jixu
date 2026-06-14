@@ -61,7 +61,7 @@
 
 ### F1 — 错误检测（双通道）
 - **强通道**：通过 CC StopFailure hook 捕获 overloaded / rate_limit 类错误
-- **弱通道**：tail CC debug log，捕获 ECONNRESET / socket closed 等连接层错误
+- **弱通道**：tail CC debug log，捕获连接层错误（ECONNRESET / socket closed / ECONNREFUSED / `Unable to connect to API` / `403 Request not allowed` 等，实测对齐 CC 2.1.177）
 - **看门狗**：活跃会话 N 秒（默认 120s）无新 token 输出 → 触发 Stalled 事件
 
 ### F2 — 自动续接
@@ -90,6 +90,8 @@
 - `jixu run` 用 node-pty 在当前终端托管 Claude Code：输出/输入直通，中断时在同一窗口自动续接
 - 仅在 waiter 自己 spawn 的进程上启用，不注入外部终端
 - 自管 `--session-id`，续接用 `--resume <sid>`；node-pty 为 optionalDependency 惰性加载
+- **同会话试探（ConnDead，2026-06-14）**：检测到网络中断时先向当前会话补发一次「继续」+回车试探，观察窗口（`JIXU_PROBE_ESCALATE_MS`，默认 8s）内未再报错判定恢复，再报错则升级为 kill + `--resume`（见 ADR-006 修订）
+- **事件日志**：检测/决策/试探/注入「继续」/结局写入 `~/.local/share/jixu/run.log`，便于回看续接过程
 
 ---
 
