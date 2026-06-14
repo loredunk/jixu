@@ -49,6 +49,8 @@ export interface SupervisorDeps {
   io: SupervisorIo
   /** RateLimited 无 resets_at 时用它补（通常接 adapter.usage） */
   usage?: () => Promise<UsageLike>
+  /** 流式输出分类器（默认 Claude）；切工具时由 main 注入对应 profile 的实现 */
+  classifyStreamLine?: (line: string) => JixuEvent | null
   sleep?: (ms: number) => Promise<void>
   now?: () => number
   newSessionId?: () => string
@@ -81,10 +83,12 @@ export class Supervisor {
   private readonly stallMs: number
   private readonly setTimer: (fn: () => void, ms: number) => TimerHandle
   private readonly clearTimer: (h: TimerHandle) => void
+  private readonly classify: (line: string) => JixuEvent | null
   private current: SupervisedPty | undefined
 
   constructor(deps: SupervisorDeps) {
     this.deps = deps
+    this.classify = deps.classifyStreamLine ?? classifyStreamLine
     this.sleep = deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)))
     this.now = deps.now ?? Date.now
     this.recoverMs = deps.recoverMs ?? 60_000
@@ -192,7 +196,7 @@ export class Supervisor {
 
       const scanner = createLineScanner((line) => {
         if (detected) return
-        const ev = classifyStreamLine(line)
+        const ev = this.classify(line)
         if (ev) {
           detected = ev
           nudger?.cancel() // 正在失败，别再注入

@@ -8,12 +8,7 @@ import {
   type JixuEvent,
   type IToolAdapter,
 } from '@jixu/core'
-import {
-  ClaudeCodeAdapter,
-  LogTailer,
-  resolveLatestLog,
-  defaultLogDir,
-} from '@jixu/adapter-claude'
+import { getProfile, type ToolId, type ToolProfile, type Tailer } from './tools.js'
 import { jobsDir, logFilePath, stateFilePath } from './paths.js'
 import { JobWatcher } from './watcher.js'
 import { Watchdog, DEFAULT_STALL_TIMEOUT_MS } from './watchdog.js'
@@ -23,6 +18,8 @@ import { initialState, writeState, type WaiterState } from './state.js'
 
 export interface DaemonOptions {
   adapter?: IToolAdapter
+  /** 选择托管的工具（决定默认适配器与弱通道 tailer）；默认 claude */
+  tool?: ToolId
   home?: string
   maxRetries?: number
   stallTimeoutMs?: number
@@ -41,6 +38,7 @@ export interface DaemonOptions {
  * 所有事件经 enqueue 串行处理，避免并发改 guardState。
  */
 export class Daemon {
+  private readonly profile: ToolProfile
   private readonly adapter: IToolAdapter
   private readonly home: string | undefined
   private readonly maxRetries: number | undefined
@@ -59,17 +57,18 @@ export class Daemon {
   private state: WaiterState
 
   private watcher: JobWatcher
-  private tailer: LogTailer | undefined
+  private tailer: Tailer | undefined
   private watchdog: Watchdog
   private stallTimer: ReturnType<typeof setInterval> | undefined
 
   constructor(opts: DaemonOptions = {}) {
-    this.adapter = opts.adapter ?? new ClaudeCodeAdapter()
+    this.profile = getProfile(opts.tool)
+    this.adapter = opts.adapter ?? this.profile.makeAdapter()
     this.home = opts.home
     this.maxRetries = opts.maxRetries
     this.stallTimeoutMs = opts.stallTimeoutMs ?? DEFAULT_STALL_TIMEOUT_MS
     this.stallCheckMs = opts.stallCheckMs ?? Math.min(Math.floor(this.stallTimeoutMs / 4), 30_000)
-    this.logDir = opts.logDir ?? defaultLogDir(opts.home)
+    this.logDir = opts.logDir ?? this.profile.defaultLogDir(opts.home)
     this.now = opts.now ?? Date.now
     this.sleep = opts.sleep
 
@@ -172,24 +171,27 @@ export class Daemon {
   }
 
   /**
-   * 弱通道：tail 最新 CC debug log。命中 ConnDead 时归因到「最近活跃的 session」
-   * （pending：日志到 session 的精确映射待真实环境确认）。每行作为活跃信号。
+   * 弱通道：tail 最新日志（Claude debug log / Codex rollout jsonl）。
+   * 归因优先用文件本身能确定的 session（Codex rollout 文件名含 uuid），
+   * 否则回退到「最近活跃的 session」（启发式，pending：真实环境精确映射待确认）。
    */
   private startLogTailer(): void {
-    const file = resolveLatestLog(this.logDir)
+    const file = this.profile.resolveLatestLog(this.logDir)
     if (!file) {
-      this.log(`未发现 CC debug log（${this.logDir}），弱通道暂不可用`)
+      this.log(`未发现 ${this.profile.id} 弱通道日志（${this.logDir}），弱通道暂不可用`)
       return
     }
-    this.tailer = new LogTailer({
+    const tailSid = this.profile.sessionIdForLog?.(file)
+    this.tailer = this.profile.makeTailer({
       filePath: file,
       onLine: () => {
-        if (this.lastActiveSession) this.watchdog.record(this.lastActiveSession)
+        const sid = tailSid ?? this.lastActiveSession
+        if (sid) this.watchdog.record(sid)
       },
       onEvent: (event) => {
-        const sid = this.lastActiveSession
+        const sid = tailSid ?? this.lastActiveSession
         if (!sid) {
-          this.log(`log 命中 ${event.type} 但无活跃 session，无法归因，已忽略`)
+          this.log(`弱通道命中 ${event.type} 但无法归因 session，已忽略`)
           return
         }
         const pid = this.sessionPids.get(sid)
@@ -197,7 +199,7 @@ export class Daemon {
       },
     })
     this.tailer.start()
-    this.log(`弱通道 tail：${file}`)
+    this.log(`弱通道 tail（${this.profile.id}）：${file}`)
   }
 
   private flushState(): void {

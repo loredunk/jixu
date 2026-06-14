@@ -6,6 +6,7 @@ export default defineConfig({
     alias: {
       '@jixu/core': resolve(__dirname, 'packages/core/src/index.ts'),
       '@jixu/adapter-claude': resolve(__dirname, 'packages/adapter-claude/src/index.ts'),
+      '@jixu/adapter-codex': resolve(__dirname, 'packages/adapter-codex/src/index.ts'),
     },
   },
   test: {

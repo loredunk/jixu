@@ -1,7 +1,7 @@
 {
   "name": "@jixu/adapter-codex",
   "version": "0.1.0",
-  "description": "Codex 适配器（占位，M3 仍为占位）",
+  "description": "Codex 适配器（OpenAI codex CLI）",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -21,6 +21,9 @@
   },
   "dependencies": {
     "@jixu/core": "^0.1.0"
+  },
+  "optionalDependencies": {
+    "node-pty": "^1.0.0"
   },
   "scripts": {
     "build": "tsc -b",

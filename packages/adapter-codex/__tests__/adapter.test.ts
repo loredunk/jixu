@@ -1,27 +1,71 @@
 import { describe, test, expect } from 'vitest'
-import { CodexAdapter, NotImplementedError } from '../src/adapter'
+import { CodexAdapter } from '../src/adapter'
 import type { IToolAdapter } from '@jixu/core'
+import type { PtySpawner, PtyHandle } from '../src/pty'
 
-/**
- * Codex 本期只留占位（PRD 非目标）。这里证明：实现 IToolAdapter 即可接入新工具，
- * 无需改 @jixu/core 或 waiter——架构可扩展性的回归测试。
- */
-describe('CodexAdapter（占位）', () => {
-  // 赋值给 IToolAdapter 类型即编译期证明契约一致
-  const adapter: IToolAdapter = new CodexAdapter()
+/** 可注入的 mock spawner，断言 resume('pty') 的启动参数与退出处理 */
+function fakeSpawner(): {
+  spawner: PtySpawner
+  calls: Array<{ file: string; args: string[] }>
+  fire: (code: number) => void
+} {
+  const calls: Array<{ file: string; args: string[] }> = []
+  let exitCb: ((e: { exitCode: number }) => void) | undefined
+  const spawner: PtySpawner = {
+    spawn(file, args) {
+      calls.push({ file, args })
+      const handle: PtyHandle = {
+        pid: 4242,
+        onData: () => {},
+        onExit: (cb) => {
+          exitCb = cb
+        },
+        write: () => {},
+        resize: () => {},
+        kill: () => {},
+      }
+      return handle
+    },
+  }
+  return { spawner, calls, fire: (code) => exitCb?.({ exitCode: code }) }
+}
 
-  test('满足 IToolAdapter 形状', () => {
+describe('CodexAdapter', () => {
+  test('满足 IToolAdapter 形状，能力位 weak/true/true', () => {
+    const adapter: IToolAdapter = new CodexAdapter()
     expect(adapter.id).toBe('codex')
-    expect(adapter.capabilities).toMatchObject({
-      errorDetect: expect.any(String),
-      resetTime: expect.any(Boolean),
-      forceContinue: expect.any(Boolean),
+    expect(adapter.capabilities).toEqual({
+      errorDetect: 'weak',
+      resetTime: true,
+      forceContinue: true,
     })
   })
 
-  test('resume / usage / kill 均抛 NotImplementedError', async () => {
-    expect(() => adapter.resume('headless', 's')).toThrow(NotImplementedError)
-    expect(() => adapter.usage()).toThrow(NotImplementedError)
-    expect(() => adapter.kill(123)).toThrow(NotImplementedError)
+  test('resume("pty") 用 codex resume <sid> 起进程，退出码 0 → resolve', async () => {
+    const { spawner, calls, fire } = fakeSpawner()
+    const adapter = new CodexAdapter({ ptySpawner: spawner })
+    const p = adapter.resume('pty', 'sid-1')
+    expect(calls).toEqual([{ file: 'codex', args: ['resume', 'sid-1'] }])
+    fire(0)
+    await expect(p).resolves.toBeUndefined()
+  })
+
+  test('resume("pty") 退出码非 0 → reject', async () => {
+    const { spawner, fire } = fakeSpawner()
+    const adapter = new CodexAdapter({ ptySpawner: spawner })
+    const p = adapter.resume('pty', 'sid-1')
+    fire(1)
+    await expect(p).rejects.toThrow('退出码 1')
+  })
+
+  test('kill 不存在的 pid → resolve（ESRCH 视为已退出）', async () => {
+    const adapter = new CodexAdapter()
+    await expect(adapter.kill(2_000_000_000)).resolves.toBeUndefined()
+  })
+
+  test('usage() 不抛错，返回对象（无 rollout 时为空）', async () => {
+    const adapter = new CodexAdapter()
+    const usage = await adapter.usage()
+    expect(typeof usage).toBe('object')
   })
 })

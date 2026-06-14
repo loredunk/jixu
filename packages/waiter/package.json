@@ -24,6 +24,7 @@
   },
   "dependencies": {
     "@jixu/adapter-claude": "^0.1.0",
+    "@jixu/adapter-codex": "^0.1.0",
     "@jixu/core": "^0.1.0"
   },
   "scripts": {

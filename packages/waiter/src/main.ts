@@ -1,14 +1,9 @@
 #!/usr/bin/env node
 import { openSync, writeFileSync, mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
-import {
-  ClaudeCodeAdapter,
-  nodePtySpawner,
-  claudeBin,
-  buildClaudeArgs,
-  newSessionId,
-} from '@jixu/adapter-claude'
+import { nodePtySpawner } from '@jixu/adapter-claude'
 import { Daemon } from './daemon.js'
+import { getProfile, parseToolFlag } from './tools.js'
 import { Supervisor, type SupervisorIo, type SupervisedPty } from './supervisor.js'
 import { installHookPlugin } from './init.js'
 import { readState } from './state.js'
@@ -22,7 +17,7 @@ import {
   DaemonAlreadyRunningError,
 } from './process-mgr.js'
 
-const USAGE = '用法: jixu run|start|stop|status|init'
+const USAGE = '用法: jixu run|start|stop|status|init  [--tool claude|codex]'
 
 /** 自己管理退出/常驻的命令，main 不替它们 process.exit */
 const SELF_MANAGED = new Set(['__daemon', 'run'])
@@ -49,17 +44,18 @@ async function main(): Promise<number> {
 }
 
 /**
- * `jixu run [-- <claude 参数>]`：前台用 PTY 托管 Claude Code。
- * 输出/输入直通你的终端（就是普通 claude 会话），中断时在本窗口自动续接。
+ * `jixu run [--tool claude|codex] [-- <底层 CLI 参数>]`：前台用 PTY 托管编码工具。
+ * 输出/输入直通你的终端（就是普通 claude / codex 会话），中断时在本窗口自动续接。
  */
 function cmdRun(): number {
-  const extraArgs = process.argv.slice(3)
+  const { tool, rest: extraArgs } = parseToolFlag(process.argv.slice(3))
+  const profile = getProfile(tool)
   const spawner = nodePtySpawner() // 缺 node-pty 时这里抛友好错误
   const io = realIo()
 
   const supervisor = new Supervisor({
     launch: (sessionId, resume, size): SupervisedPty => {
-      const h = spawner.spawn(claudeBin(), buildClaudeArgs({ sessionId, resume, extraArgs }), {
+      const h = spawner.spawn(profile.bin(), profile.buildArgs({ sessionId, resume, extraArgs }), {
         cols: size.cols,
         rows: size.rows,
         env: process.env,
@@ -73,8 +69,9 @@ function cmdRun(): number {
       }
     },
     io,
-    usage: () => new ClaudeCodeAdapter().usage(),
-    newSessionId,
+    usage: () => profile.makeAdapter().usage(),
+    newSessionId: profile.newSessionId,
+    classifyStreamLine: profile.classifyStreamLine,
   })
 
   supervisor
@@ -127,6 +124,7 @@ function realIo(): RealIo {
 }
 
 function cmdStart(): number {
+  const { tool } = parseToolFlag(process.argv.slice(3))
   const pidFile = pidFilePath()
   const running = readLivePid(pidFile)
   if (running !== null) {
@@ -138,15 +136,16 @@ function cmdStart(): number {
   const logFile = logFilePath()
   const logFd = openSync(logFile, 'a') // 守护进程的 stdout/stderr 重定向到日志
 
-  const childPid = spawnDaemon(process.argv[1] as string, ['__daemon'], logFd)
+  const childPid = spawnDaemon(process.argv[1] as string, ['__daemon', '--tool', tool], logFd)
   writeFileSync(pidFile, String(childPid))
 
-  console.log(`jixu 守护进程已启动（pid ${childPid}）`)
+  console.log(`jixu 守护进程已启动（pid ${childPid}，工具 ${tool}）`)
   console.log(`日志：${logFile}`)
   return 0
 }
 
 function cmdDaemon(): number {
+  const { tool } = parseToolFlag(process.argv.slice(3))
   const pidFile = pidFilePath()
   try {
     acquireLock(pidFile)
@@ -160,7 +159,7 @@ function cmdDaemon(): number {
 
   // stdout/stderr 已被 start 重定向到 waiter.log；logger 再 echoStderr 会写两遍，故关掉。
   // 未经 logger 的崩溃堆栈仍会经 stderr 落到日志文件。
-  const daemon = new Daemon({ echoStderr: false })
+  const daemon = new Daemon({ tool, echoStderr: false })
   daemon.start()
 
   const shutdown = (): void => {

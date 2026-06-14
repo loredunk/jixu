@@ -30,7 +30,7 @@
 - 不做内容感知（不判断任务是否真正完成）
 - 不跨机器同步会话状态
 - 不支持多账户切换
-- Codex 适配器本期只留接口占位，不实现
+- ~~Codex 适配器本期只留接口占位，不实现~~ → **已落地**（M3 后追加，见 ADR-008）：`@jixu/adapter-codex` 实现 IToolAdapter，`jixu run`/守护进程经 `--tool codex` 托管 OpenAI Codex
 
 ---
 
@@ -112,6 +112,7 @@
 | **M1** | 契约类型 + 决策核心(TDD) + ClaudeCodeAdapter(headless) + hook 脚本 + demo | ✅ **完成** |
 | **M2** | log-tailer + OAuth usage API + 完整 Waiter daemon（start/stop/status/init）| ✅ **完成** |
 | **M3** | PTY 交互式续接（jixu run）+ CodexAdapter 占位 + npm/plugin 发布配置 | ✅ **完成** |
+| **Codex** | CodexAdapter 真正落地 + ToolProfile 工具选择（`--tool codex`），见 ADR-008 | ✅ **完成** |
 
 ---
 

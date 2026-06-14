@@ -6,7 +6,8 @@
   },
   "references": [
     { "path": "../core" },
-    { "path": "../adapter-claude" }
+    { "path": "../adapter-claude" },
+    { "path": "../adapter-codex" }
   ],
   "include": ["src"]
 }
