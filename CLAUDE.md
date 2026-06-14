@@ -22,7 +22,7 @@
 
 **当前状态**：三个里程碑 + Codex 接入均完成。`npm run build` / `npm test` 均通过（**238 个单测**）。
 
-> **2026-06-14 增量**：实测对齐 Claude Code 2.1.177 真实网络报错串（`403 Request not allowed` / `Unable to connect to API (ConnectionRefused)` → `ConnDead`）；`jixu run` 新增同会话「继续」试探（ConnDead 先试探、不行再 kill 重开，见 ADR-006 修订）+ 事件日志 `~/.local/share/jixu/run.log`；postinstall 修复 node-pty `spawn-helper` 执行位。
+> **2026-06-14 增量**：实测对齐 Claude Code 2.1.177 真实网络报错串（`403 Request not allowed` / `Unable to connect to API (ConnectionRefused)` → `ConnDead`）；`jixu run` 新增同会话「继续」试探（ConnDead 先试探、不行再 kill 重开，见 ADR-006 修订）+ 事件日志 `~/.local/share/jixu/run.log`；postinstall 修复 node-pty `spawn-helper` 执行位。**Codex 错误分类经联网查证 codex 真实 issue 输出后重构**：codex 把 429/401/400/5xx 都包成 `stream error: ... last status: <code>`，旧逻辑「stream error 一律 ConnDead」会误吞 FATAL（401 尤危险）。改为两档：`HARD_CONN_RE`（硬连接错误优先 ConnDead，含 DNS/TLS/路由/OS-errno 中国网络族）→ 状态码语义（429→RateLimited / 401→auth / 400→invalid / 5xx→overloaded）→ `SOFT_CONN_RE`（stream error/重试耗尽兜底）。`rate_limits` 字段（primary/secondary·used_percent·resets_in_seconds·window_minutes）已证实；exec 模式 rate_limits 恒 null（jixu run 用 PTY 不受影响）。详见 ADR-008。
 
 下一步候选（无既定里程碑）：真实环境验证（CC usage API 字段、daemon 弱通道 log 路径；**Codex 的 `exec --json` 事件、`rate_limits` 快照、rollout 记录嵌套字段**）、弱通道 log↔session 精确归因、首次 npm 发布（确认包名可用）。
 
@@ -187,6 +187,6 @@ npm run build        # 编译所有包
 | CC debug log 的精确路径 | M2→M3 | 已实现：默认 `~/.claude/logs` 取最新 `*.log`，可经 `DaemonOptions.logDir` 覆盖；真实路径与日志→session 归因仍需在真实环境确认 |
 | Statusline 缓存文件格式对齐 | M2→M3 | 已约定 jixu 端 schema：`~/.local/share/jixu/cache/rate_limits.json`，含 `timestamp`(ms) + `rate_limits.five_hour.resets_at`，30 分钟内有效；待与 statusline 插件落地对齐 |
 | 弱通道 ConnDead 的 session 归因 | 后续 | Claude daemon 弱通道归因到「最近活跃 session」（启发式）；Codex 弱通道可从 rollout 文件名定位 session（`ToolProfile.sessionIdForLog`）。注：`jixu run` 因自管会话/`--last`，归因是确定的 |
-| **Codex 真实字段校验** | Codex ✅→后续 | exec `--json` 事件名、`rate_limits` 快照（primary/secondary、resets_in_seconds）、rollout 记录嵌套均按公开行为**推断**，已防御式编码；需在真实 codex 环境核对后收敛正则/字段（见 ADR-008 后果） |
+| **Codex 真实字段校验** | Codex ✅→后续 | 已联网查证：`stream error/last status/exceeded retry limit/stream disconnected` 文案与 `rate_limits`（primary/secondary·used_percent·resets_in_seconds·window_minutes）**已证实**并据此重构分类顺序；exec 模式 rate_limits 恒 null。**仍待真机抓 rollout 样本核对**：`exec --json` 事件名、rollout 记录嵌套、底层 reqwest/os-errno/DNS/TLS 裸串是否真出现在 rollout（现作防御式兜底）（见 ADR-008 后果） |
 | PTY 库选型 | M3 ✅ | 选定 **node-pty**（PRD F6 指定）；作为 adapter-claude/adapter-codex 的 optionalDependency 惰性加载，缺失只在 `jixu run` 时报错 |
 | npm 包名是否已被占用 | 发布前 | 发布配置（files/publishConfig/prepack 打包 plugin/）已就绪；实际发布与确认 `jixu`/`@jixu/*` 占名待执行 |

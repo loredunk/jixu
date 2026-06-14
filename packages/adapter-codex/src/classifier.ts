@@ -12,25 +12,62 @@ import type { JixuEvent } from '@jixu/core'
  * 注：字段形态按 Codex 公开行为推断，真实环境字段仍需校验（见 ADR-008）。
  */
 
-// 连接层错误关键字（弱通道核心）。刻意避开过宽的词（如裸 "terminated"）以减少误判。
-const CONN_RE =
-  /ECONNRESET|socket hang up|connection reset|socket closed|stream (disconnected|closed|error)|ETIMEDOUT|ECONNREFUSED|ConnectionRefused|connection (refused|timed out|closed)|fetch failed|network error|403 request not allowed|unable to connect to api/i
+// Codex 是 Rust CLI（reqwest / hyper / tokio / rustls），网络错误串与 Claude(Node) 不是一套。
+//
+// 连接层分两档（见 ADR-008，正则按 codex 真实 issue 输出 + 防御式推断对齐）：
+//
+// HARD —— 无歧义的硬连接/网络栈错误，直接 ConnDead，且优先于一切 HTTP 状态码判定。
+//   既有 Node/通用串 + Rust HTTP 栈 + 中国网络高发失败面（DNS 污染 / TLS 握手被 GFW 干扰
+//   / 连接重置 / 路由黑洞 / OS errno）。这些串不会出现在正常输出里，命中即连接死亡。
+const HARD_CONN_PATTERNS = [
+  // 通用 socket / 连接层
+  'ECONNRESET', 'socket hang up', 'connection reset', 'socket closed',
+  'connection (refused|timed out|closed|aborted)',
+  // Node 变体 / 实测 CC 断网串
+  'ETIMEDOUT', 'ECONNREFUSED', 'ConnectionRefused',
+  'fetch failed', 'network error', '403 request not allowed', 'unable to connect to api',
+  // reqwest / hyper 顶层与连接体
+  'error sending request', 'connection closed before message completed',
+  'error reading a body', 'incomplete message',
+  // tokio/io OS errno（GFW 重置 104 / 超时 110 / 拒绝 111 / 不可达 101,113 / 断管 32）
+  'os error (104|110|111|101|113|32)', 'connection reset by peer', 'broken pipe',
+  'network is unreachable', 'no route to host',
+  // DNS（污染 / 解析失败）
+  'dns error', 'failed to lookup address', 'name resolution', 'ENOTFOUND',
+  // 路由 / 管道 errno
+  'EHOSTUNREACH', 'ENETUNREACH', 'EPIPE',
+  // TLS 握手被干扰（GFW 中间人 / SNI 阻断）
+  'tls handshake', 'handshake fail', 'received fatal alert', 'peer closed connection',
+  'invalid peer certificate', 'certificate verify failed', 'EPROTO',
+  // 超时惯用文案
+  'operation timed out', 'request timed out',
+]
+const HARD_CONN_RE = new RegExp(HARD_CONN_PATTERNS.join('|'), 'i')
 
-/** 连接层错误 → ConnDead；否则 null。用于在任意纯文本行上做连接层判定。 */
+// SOFT —— 歧义信号，必须排在 HTTP 状态码判定「之后」兜底。
+//   codex 把 429/401/400/5xx 都包成 `stream error: ... last status: <code>` /
+//   `exceeded retry limit, last status: <code>`（实测 issue #2612/#2896/#9148）。
+//   只有当文本没有可识别的 HTTP 语义时（如 `stream disconnected before completion: ...`
+//   纯断流），才落 ConnDead；否则交给上面的 rate/auth/invalid/overloaded 正确归类。
+const SOFT_CONN_RE = /stream (disconnected|closed|error)|exceeded retry limit/i
+
+/** 纯文本行的硬连接层探测 → ConnDead；否则 null（歧义 stream/状态码不在此判，避免误吞 FATAL）。 */
 export function classifyLogLine(line: string): JixuEvent | null {
-  if (CONN_RE.test(line)) return { type: 'ConnDead', raw: line }
+  if (HARD_CONN_RE.test(line)) return { type: 'ConnDead', raw: line }
   return null
 }
 
 /**
- * 把一段错误消息文本分类为事件。顺序很重要：先具体后宽泛
- * （连接层 → 速率限制 → 计费 → 过载 → 鉴权 → 上下文 → 通用 400）。
+ * 把一段错误消息文本分类为事件。顺序刻意为之：
+ *   硬连接错误 → 速率限制 → 计费 → 过载(5xx) → 鉴权 → 上下文 → 通用 400 → 软连接兜底。
+ * 关键：状态码语义（429/401/400/5xx）必须先于「stream error / exceeded retry limit」兜底，
+ * 因为 codex 把这些状态码都包在 stream-error 文案里（见 SOFT_CONN_RE 注释）。
  */
 export function classifyCodexMessage(message: string): JixuEvent | null {
   if (!message) return null
   const m = message
 
-  if (CONN_RE.test(m)) return { type: 'ConnDead', raw: m }
+  if (HARD_CONN_RE.test(m)) return { type: 'ConnDead', raw: m }
 
   // ChatGPT 套餐用量上限 / API 429 → 速率限制（套餐限流是可重置的，非计费失败）
   if (/usage limit|rate.?limit|too many requests|\b429\b/i.test(m)) {
@@ -45,7 +82,8 @@ export function classifyCodexMessage(message: string): JixuEvent | null {
     return { type: 'ApiError', reason: 'billing_failed', raw: m }
   }
 
-  if (/overloaded|server had an error|server_error|temporarily unavailable|\b50[234]\b/i.test(m)) {
+  // 服务端 5xx / 过载（含 Cloudflare 520-526），可重试
+  if (/overloaded|server had an error|server_error|internal server error|temporarily unavailable|\b5\d\d\b/i.test(m)) {
     return { type: 'ApiError', reason: 'overloaded', raw: m }
   }
 
@@ -60,6 +98,9 @@ export function classifyCodexMessage(message: string): JixuEvent | null {
   if (/invalid.?request|bad request|\b400\b/i.test(m)) {
     return { type: 'ApiError', reason: 'invalid_request', raw: m }
   }
+
+  // 兜底：stream error / 重试耗尽且无可识别 HTTP 语义（纯断流，如 stream disconnected before completion）
+  if (SOFT_CONN_RE.test(m)) return { type: 'ConnDead', raw: m }
 
   return null
 }

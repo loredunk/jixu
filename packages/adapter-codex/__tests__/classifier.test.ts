@@ -62,6 +62,61 @@ describe('classifyCodexMessage()', () => {
     })
   })
 
+  // Codex=Rust(reqwest/hyper/tokio/rustls)：下面是中国网络不稳定下的真实风格错误串
+  test.each([
+    'error sending request for url (https://api.openai.com/v1/responses)',
+    'connection closed before message completed',
+    'Connection reset by peer (os error 104)',
+    'Connection refused (os error 111)',
+    'dns error: failed to lookup address information: Temporary failure in name resolution',
+    'received fatal alert: handshake_failure',
+    'tls handshake eof',
+    'operation timed out',
+    'Network is unreachable (os error 101)',
+  ])('Rust/中国网络族 → ConnDead: %s', (msg) => {
+    expect(classifyCodexMessage(msg)).toMatchObject({ type: 'ConnDead' })
+  })
+
+  // 实测 codex 把状态码包进 `stream error: ... last status: <code>`（issue #2612/#2896/#9148）。
+  // 关键：必须按状态码归类，而非一律 ConnDead——否则 401(FATAL) 会被当可重试连接错误反复重启。
+  test('stream error 按 last status 状态码归类（不被 stream-error 吞成 ConnDead）', () => {
+    expect(
+      classifyCodexMessage('⚠ stream error: exceeded retry limit, last status: 429 Too Many Requests; retrying 4/5 in 1.471s'),
+    ).toMatchObject({ type: 'RateLimited' })
+    expect(
+      classifyCodexMessage('stream error: exceeded retry limit, last status: 401 Unauthorized, request id: 98c70fafdb690c36-LHR; retrying 1/5 in 212ms'),
+    ).toMatchObject({ type: 'ApiError', reason: 'auth_failed' })
+    expect(
+      classifyCodexMessage('⚠ stream error: unexpected status 400 Bad Request: {"error":{"message":"Provider returned error"}}'),
+    ).toMatchObject({ type: 'ApiError', reason: 'invalid_request' })
+    expect(
+      classifyCodexMessage('🖐 exceeded retry limit, last status: 503 Service Unavailable'),
+    ).toMatchObject({ type: 'ApiError', reason: 'overloaded' })
+  })
+
+  // 纯断流（无状态码）→ SOFT 兜底 ConnDead（实测 issue #19121）
+  test('stream disconnected before completion（无状态码）→ ConnDead', () => {
+    expect(
+      classifyCodexMessage('Stream disconnected before completion: An error occurred while processing your request. Please include the request ID 5036c677-60f5-4aef-ad04-da4182e0fc56 in your message.'),
+    ).toMatchObject({ type: 'ConnDead' })
+  })
+
+  // 防回归：硬连接层与状态码语义不得相互吞没
+  test('扩宽后 FATAL 分类不变', () => {
+    expect(classifyCodexMessage('401 Unauthorized: not logged in')).toMatchObject({
+      type: 'ApiError',
+      reason: 'auth_failed',
+    })
+    expect(classifyCodexMessage('Error: insufficient_quota')).toMatchObject({
+      type: 'ApiError',
+      reason: 'billing_failed',
+    })
+    expect(classifyCodexMessage('maximum context length exceeded')).toMatchObject({
+      type: 'ApiError',
+      reason: 'context_too_long',
+    })
+  })
+
   test('普通文本 → null', () => {
     expect(classifyCodexMessage('Working on it…')).toBeNull()
   })
@@ -85,6 +140,14 @@ describe('classifyExecEvent()', () => {
       payload: { type: 'error', message: 'server is overloaded' },
     })
     expect(classifyExecEvent(line)).toMatchObject({ type: 'ApiError', reason: 'overloaded' })
+  })
+
+  test('rollout 包裹 Rust 网络串（reqwest）→ ConnDead', () => {
+    const line = JSON.stringify({
+      type: 'event_msg',
+      payload: { type: 'error', message: 'error sending request for url (https://api.openai.com): connection reset by peer (os error 104)' },
+    })
+    expect(classifyExecEvent(line)).toMatchObject({ type: 'ConnDead' })
   })
 
   test('thread.started（无错误消息）→ null', () => {
