@@ -4,13 +4,13 @@
 
 ## 简介
 
-国内网络环境下，Claude Code 经常因以下原因中断会话：
+国内网络环境下，Claude Code / Codex 经常因以下原因中断会话：
 - API 速率限制（五小时窗口 / 七天窗口）
 - 网络连接中断（ECONNRESET / socket closed）
 - 服务器过载（overloaded）
 - 会话无响应（Stalled）
 
-`jixu` 作为常驻守护进程，监听这些事件并在合适的时机自动执行 `claude --resume`，让你无需手动干预。
+`jixu` 监听这些事件，在合适的时机自动续接会话，让你无需手动干预。
 
 ## 架构
 
@@ -51,17 +51,13 @@ jixu run --tool codex       # 改托管 OpenAI Codex（codex CLI）
 …(对话在你眼前接着跑)…
 ```
 
-关键点：`claude --resume` 只是重开会话、不会自己接着跑被打断的那一轮，所以
-jixu 会在会话**输出安静下来（判定就绪）后替你敲一次「继续」+回车**。可调：
-
-- `JIXU_CONTINUE_PROMPT`：续接提示语，默认 `继续`；设为空串则只重开、不自动发送
-- `JIXU_NUDGE_QUIET_MS`：判定「就绪」的静默时长，默认 `800`（毫秒）
-- `JIXU_STALL_MS`：多久无输出判定为「静默挂起」→ kill 重启续接，默认 `120000`（毫秒），`0` 禁用
+关键点：续接（`claude --resume` / `codex resume`）只是重开会话、不会自己接着跑被打断的那一轮，
+所以 jixu 会在会话**输出安静下来（判定就绪）后替你敲一次「继续」+回车**（可用下方环境变量微调）。
 
 三类中断都接得住：**报错**（overloaded/rate_limit/ECONNRESET）、**进程退出**、**静默挂起**（不报错也不退出、长时间无输出）。
 
 > 需要 `node-pty`（原生模块，随包作为 optionalDependency 安装；macOS/Linux）。
-> 注：交互注入的就绪时机为启发式，尚未在真实 Claude Code TUI 上调过参。
+> 注：续接后的「就绪」判定为启发式，可用上面的环境变量微调。
 
 ### 后台守护 —— 跑长任务时自动兜底
 
@@ -73,10 +69,19 @@ jixu status             # 查看监听的 session 与续接计数
 jixu stop               # 停止
 ```
 
-守护进程通过 hook + 日志双通道探测中断，headless 在后台续接（输出进 `~/.local/share/jixu/waiter.log`）。
+守护进程探测中断后在后台续接（输出进 `~/.local/share/jixu/waiter.log`）：
+托管 Claude 时走 hook + debug log 双通道，托管 Codex 时 tail `~/.codex/sessions` 的 rollout。
 
-> **工具选择**：`--tool claude`（默认）/ `--tool codex` 对 `run` 与 `start` 均可用。
-> 两者差异（Codex 无 StopFailure hook、不能预设 session id、resets_at 内联在 rate_limits 事件）见 `docs/adr/ADR-008-codex-adapter.md`。Codex 真实字段仍待在真实环境核对。
+> **工具选择**：`--tool claude`（默认）/ `--tool codex`，对 `run` 与 `start` 均可用。
+
+## 环境变量
+
+| 变量 | 默认 | 说明 |
+|------|------|------|
+| `JIXU_CONTINUE_PROMPT` | `继续` | 续接后注入的提示语；空串则只重开、不自动发送 |
+| `JIXU_NUDGE_QUIET_MS` | `800` | 判定「就绪」的静默时长（毫秒） |
+| `JIXU_STALL_MS` | `120000` | 多久无输出判定静默挂起 → kill 重启（`0` 禁用） |
+| `JIXU_CLAUDE_BIN` / `JIXU_CODEX_BIN` | `claude` / `codex` | 自定义可执行文件路径 |
 
 ## 开发
 
