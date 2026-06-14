@@ -55,7 +55,15 @@ export interface SupervisorDeps {
   maxRetries?: number
   /** 健康运行超过此时长后清零失败计数（视为已恢复），默认 60s */
   recoverMs?: number
+  /** 续接后注入的提示语；默认 env JIXU_CONTINUE_PROMPT ?? '继续'，空串则不注入 */
+  continuePrompt?: string
+  /** 续接后输出「安静」多久判定 CC 就绪、再注入提示；默认 800ms */
+  nudgeQuietMs?: number
+  setTimer?: (fn: () => void, ms: number) => TimerHandle
+  clearTimer?: (h: TimerHandle) => void
 }
+
+export type TimerHandle = unknown
 
 type Outcome =
   | { kind: 'clean'; exitCode: number }
@@ -66,6 +74,10 @@ export class Supervisor {
   private readonly sleep: (ms: number) => Promise<void>
   private readonly now: () => number
   private readonly recoverMs: number
+  private readonly continuePrompt: string
+  private readonly nudgeQuietMs: number
+  private readonly setTimer: (fn: () => void, ms: number) => TimerHandle
+  private readonly clearTimer: (h: TimerHandle) => void
   private current: SupervisedPty | undefined
 
   constructor(deps: SupervisorDeps) {
@@ -73,6 +85,10 @@ export class Supervisor {
     this.sleep = deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)))
     this.now = deps.now ?? Date.now
     this.recoverMs = deps.recoverMs ?? 60_000
+    this.continuePrompt = deps.continuePrompt ?? process.env['JIXU_CONTINUE_PROMPT'] ?? '继续'
+    this.nudgeQuietMs = deps.nudgeQuietMs ?? (Number(process.env['JIXU_NUDGE_QUIET_MS']) || 800)
+    this.setTimer = deps.setTimer ?? ((fn, ms) => setTimeout(fn, ms))
+    this.clearTimer = deps.clearTimer ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>))
   }
 
   /** 跑到 CC 正常退出（返回其退出码）或停手（返回 1）。 */
@@ -136,12 +152,28 @@ export class Supervisor {
       const handle = this.deps.launch(sessionId, resume, this.deps.io.size())
       this.current = handle
 
+      // 续接（resume）后，等输出安静下来（CC 加载完会话、停在等输入）再替用户敲「继续」，
+      // 否则 claude --resume 只是重开会话、不会接着跑被打断的那一轮。
+      const nudger = resume
+        ? createContinueNudger({
+            write: (d) => {
+              this.deps.io.status(`就绪，自动发送「${this.continuePrompt}」继续…`)
+              handle.write(d)
+            },
+            prompt: this.continuePrompt,
+            quietMs: this.nudgeQuietMs,
+            setTimer: this.setTimer,
+            clearTimer: this.clearTimer,
+          })
+        : undefined
+
       let detected: JixuEvent | null = null
       const scanner = createLineScanner((line) => {
         if (detected) return
         const ev = classifyStreamLine(line)
         if (ev) {
           detected = ev
+          nudger?.cancel() // 正在失败，别再注入
           // 命中中断：CC 可能仍挂着，主动 kill 触发干净重启（ADR-006）
           handle.kill()
         }
@@ -150,13 +182,17 @@ export class Supervisor {
       handle.onData((d) => {
         this.deps.io.write(d)
         scanner.push(d)
+        nudger?.bump() // 去抖：每来一段输出就重置「安静」计时
       })
       handle.onExit(({ exitCode }) => {
         this.current = undefined
+        nudger?.cancel()
         if (detected) resolve({ kind: 'fail', event: detected, exitCode })
         else if (exitCode === 0) resolve({ kind: 'clean', exitCode })
         else resolve({ kind: 'fail', event: { type: 'ConnDead', raw: `claude 退出码 ${exitCode}` }, exitCode })
       })
+
+      nudger?.bump() // CC 启动后可能一段时间无输出，先武装一次
     })
   }
 
@@ -181,6 +217,54 @@ export class Supervisor {
 
   private maxRetriesOpt(): { maxRetries?: number } {
     return this.deps.maxRetries !== undefined ? { maxRetries: this.deps.maxRetries } : {}
+  }
+}
+
+export interface Nudger {
+  /** 每来一段输出调用：去抖重置「安静」计时 */
+  bump(): void
+  /** 进程退出 / 正在失败时调用：取消注入 */
+  cancel(): void
+}
+
+/**
+ * 续接提示注入器（去抖）：在输出「安静」quietMs 后，向 PTY 写一次 `prompt + \r`，
+ * 模拟用户敲「继续」+回车——这是 claude --resume 真正接着跑被打断那轮的关键。
+ *
+ * 只注入一次；prompt 为空串则完全禁用。纯逻辑（注入 setTimer/clearTimer 可单测）。
+ */
+export function createContinueNudger(opts: {
+  write: (data: string) => void
+  prompt: string
+  quietMs: number
+  setTimer: (fn: () => void, ms: number) => TimerHandle
+  clearTimer: (h: TimerHandle) => void
+}): Nudger {
+  let timer: TimerHandle | undefined
+  let done = false
+
+  const clear = (): void => {
+    if (timer !== undefined) {
+      opts.clearTimer(timer)
+      timer = undefined
+    }
+  }
+
+  return {
+    bump(): void {
+      if (done || opts.prompt === '') return
+      clear()
+      timer = opts.setTimer(() => {
+        timer = undefined
+        if (done) return
+        done = true
+        opts.write(opts.prompt + '\r')
+      }, opts.quietMs)
+    },
+    cancel(): void {
+      done = true
+      clear()
+    },
   }
 }
 

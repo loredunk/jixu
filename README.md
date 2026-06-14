@@ -43,12 +43,21 @@ jixu run            # 在当前终端用 PTY 启动 Claude Code
 > 帮我重构这个模块
 …(正常交互)…
 ✗ API Error: overloaded
-[jixu] 检测到 overloaded，12s 后在本窗口自动续接…
-[jixu] 续接 → 继续
+[jixu] API 错误(overloaded)，6s 后自动续接…
+…(claude --resume 重开会话)…
+[jixu] 就绪，自动发送「继续」继续…
+继续
 …(对话在你眼前接着跑)…
 ```
 
+关键点：`claude --resume` 只是重开会话、不会自己接着跑被打断的那一轮，所以
+jixu 会在会话**输出安静下来（判定就绪）后替你敲一次「继续」+回车**。可调：
+
+- `JIXU_CONTINUE_PROMPT`：续接提示语，默认 `继续`；设为空串则只重开、不自动发送
+- `JIXU_NUDGE_QUIET_MS`：判定「就绪」的静默时长，默认 `800`（毫秒）
+
 > 需要 `node-pty`（原生模块，随包作为 optionalDependency 安装；macOS/Linux）。
+> 注：交互注入的就绪时机为启发式，尚未在真实 Claude Code TUI 上调过参。
 
 ### 后台守护 —— 跑长任务时自动兜底
 

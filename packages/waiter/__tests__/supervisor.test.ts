@@ -1,5 +1,36 @@
 import { describe, test, expect } from 'vitest'
-import { Supervisor, type SupervisorIo, type SupervisedPty, type UsageLike } from '../src/supervisor'
+import {
+  Supervisor,
+  createContinueNudger,
+  type SupervisorIo,
+  type SupervisedPty,
+  type UsageLike,
+} from '../src/supervisor'
+
+/** 手动可控的定时器：去抖会 clear+set，故任意时刻只有一个 live */
+function timerHarness(): {
+  setTimer: (fn: () => void, ms: number) => unknown
+  clearTimer: (h: unknown) => void
+  fire: () => void
+  hasLive: () => boolean
+} {
+  let live: (() => void) | undefined
+  return {
+    setTimer: (fn) => {
+      live = fn
+      return {}
+    },
+    clearTimer: () => {
+      live = undefined
+    },
+    fire: () => {
+      const f = live
+      live = undefined
+      f?.()
+    },
+    hasLive: () => live !== undefined,
+  }
+}
 
 type LaunchFn = (sessionId: string, resume: boolean, size: { cols: number; rows: number }) => SupervisedPty
 
@@ -151,5 +182,63 @@ describe('Supervisor.run()', () => {
     expect(usageCalls).toBe(1)
     expect(launches.map((l) => l.resume)).toEqual([false, true])
     expect(io.statuses.join(' ')).toMatch(/限额.*续接/)
+  })
+})
+
+// ── createContinueNudger ─────────────────────────────────────────────────────
+describe('createContinueNudger()', () => {
+  function setup(prompt = '继续') {
+    const writes: string[] = []
+    const timers = timerHarness()
+    const nudger = createContinueNudger({
+      write: (d) => writes.push(d),
+      prompt,
+      quietMs: 800,
+      setTimer: timers.setTimer,
+      clearTimer: timers.clearTimer,
+    })
+    return { writes, timers, nudger }
+  }
+
+  test('安静到点 → 注入一次 prompt + 回车', () => {
+    const { writes, timers, nudger } = setup()
+    nudger.bump()
+    timers.fire()
+    expect(writes).toEqual(['继续\r'])
+  })
+
+  test('去抖：连续 bump 只有最后一个计时器生效，仍只注入一次', () => {
+    const { writes, timers, nudger } = setup()
+    nudger.bump()
+    nudger.bump()
+    nudger.bump()
+    timers.fire()
+    expect(writes).toEqual(['继续\r'])
+  })
+
+  test('注入后再 bump 不会二次注入', () => {
+    const { writes, timers, nudger } = setup()
+    nudger.bump()
+    timers.fire()
+    nudger.bump()
+    timers.fire()
+    expect(writes).toEqual(['继续\r'])
+  })
+
+  test('cancel 后到点不注入', () => {
+    const { writes, timers, nudger } = setup()
+    nudger.bump()
+    nudger.cancel()
+    timers.fire()
+    expect(writes).toEqual([])
+    expect(timers.hasLive()).toBe(false)
+  })
+
+  test('prompt 为空串 → 禁用，不武装、不注入', () => {
+    const { writes, timers, nudger } = setup('')
+    nudger.bump()
+    expect(timers.hasLive()).toBe(false)
+    timers.fire()
+    expect(writes).toEqual([])
   })
 })
