@@ -59,6 +59,8 @@ export interface SupervisorDeps {
   continuePrompt?: string
   /** 续接后输出「安静」多久判定 CC 就绪、再注入提示；默认 800ms */
   nudgeQuietMs?: number
+  /** 多久无任何输出判定为静默挂起（Stalled）→ kill 重启；默认 120s，0 禁用 */
+  stallMs?: number
   setTimer?: (fn: () => void, ms: number) => TimerHandle
   clearTimer?: (h: TimerHandle) => void
 }
@@ -76,6 +78,7 @@ export class Supervisor {
   private readonly recoverMs: number
   private readonly continuePrompt: string
   private readonly nudgeQuietMs: number
+  private readonly stallMs: number
   private readonly setTimer: (fn: () => void, ms: number) => TimerHandle
   private readonly clearTimer: (h: TimerHandle) => void
   private current: SupervisedPty | undefined
@@ -87,6 +90,7 @@ export class Supervisor {
     this.recoverMs = deps.recoverMs ?? 60_000
     this.continuePrompt = deps.continuePrompt ?? process.env['JIXU_CONTINUE_PROMPT'] ?? '继续'
     this.nudgeQuietMs = deps.nudgeQuietMs ?? (Number(process.env['JIXU_NUDGE_QUIET_MS']) || 800)
+    this.stallMs = deps.stallMs ?? (Number(process.env['JIXU_STALL_MS']) || 120_000)
     this.setTimer = deps.setTimer ?? ((fn, ms) => setTimeout(fn, ms))
     this.clearTimer = deps.clearTimer ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>))
   }
@@ -168,12 +172,31 @@ export class Supervisor {
         : undefined
 
       let detected: JixuEvent | null = null
+
+      // 静默挂起看门狗：长时间无输出（既不报错也不退出）→ 当作 Stalled，kill 重启
+      const stallWatch =
+        this.stallMs > 0
+          ? createIdleTimer({
+              onIdle: () => {
+                if (detected) return
+                detected = { type: 'Stalled' }
+                nudger?.cancel()
+                this.deps.io.status(`${Math.round(this.stallMs / 1000)}s 无输出，判定停滞，重启续接…`)
+                handle.kill()
+              },
+              ms: this.stallMs,
+              setTimer: this.setTimer,
+              clearTimer: this.clearTimer,
+            })
+          : undefined
+
       const scanner = createLineScanner((line) => {
         if (detected) return
         const ev = classifyStreamLine(line)
         if (ev) {
           detected = ev
           nudger?.cancel() // 正在失败，别再注入
+          stallWatch?.cancel()
           // 命中中断：CC 可能仍挂着，主动 kill 触发干净重启（ADR-006）
           handle.kill()
         }
@@ -183,16 +206,20 @@ export class Supervisor {
         this.deps.io.write(d)
         scanner.push(d)
         nudger?.bump() // 去抖：每来一段输出就重置「安静」计时
+        stallWatch?.bump()
       })
       handle.onExit(({ exitCode }) => {
         this.current = undefined
         nudger?.cancel()
+        stallWatch?.cancel()
         if (detected) resolve({ kind: 'fail', event: detected, exitCode })
         else if (exitCode === 0) resolve({ kind: 'clean', exitCode })
         else resolve({ kind: 'fail', event: { type: 'ConnDead', raw: `claude 退出码 ${exitCode}` }, exitCode })
       })
 
-      nudger?.bump() // CC 启动后可能一段时间无输出，先武装一次
+      // CC 启动后可能一段时间无输出，先各武装一次
+      nudger?.bump()
+      stallWatch?.bump()
     })
   }
 
@@ -220,26 +247,27 @@ export class Supervisor {
   }
 }
 
-export interface Nudger {
+export interface IdleTimer {
   /** 每来一段输出调用：去抖重置「安静」计时 */
   bump(): void
-  /** 进程退出 / 正在失败时调用：取消注入 */
+  /** 进程退出 / 已触发 / 正在失败时调用：取消 */
   cancel(): void
 }
 
+/** 续接注入器沿用同一形状 */
+export type Nudger = IdleTimer
+
 /**
- * 续接提示注入器（去抖）：在输出「安静」quietMs 后，向 PTY 写一次 `prompt + \r`，
- * 模拟用户敲「继续」+回车——这是 claude --resume 真正接着跑被打断那轮的关键。
- *
- * 只注入一次；prompt 为空串则完全禁用。纯逻辑（注入 setTimer/clearTimer 可单测）。
+ * 去抖空闲计时器：输出「安静」ms 后触发一次 onIdle（仅一次）。
+ * 续接「继续」注入与静默挂起看门狗都建立在它之上。
+ * 纯逻辑（注入 setTimer/clearTimer 可单测）。
  */
-export function createContinueNudger(opts: {
-  write: (data: string) => void
-  prompt: string
-  quietMs: number
+export function createIdleTimer(opts: {
+  onIdle: () => void
+  ms: number
   setTimer: (fn: () => void, ms: number) => TimerHandle
   clearTimer: (h: TimerHandle) => void
-}): Nudger {
+}): IdleTimer {
   let timer: TimerHandle | undefined
   let done = false
 
@@ -252,20 +280,41 @@ export function createContinueNudger(opts: {
 
   return {
     bump(): void {
-      if (done || opts.prompt === '') return
+      if (done) return
       clear()
       timer = opts.setTimer(() => {
         timer = undefined
         if (done) return
         done = true
-        opts.write(opts.prompt + '\r')
-      }, opts.quietMs)
+        opts.onIdle()
+      }, opts.ms)
     },
     cancel(): void {
       done = true
       clear()
     },
   }
+}
+
+/**
+ * 续接提示注入器（去抖）：在输出「安静」quietMs 后，向 PTY 写一次 `prompt + \r`，
+ * 模拟用户敲「继续」+回车——这是 claude --resume 真正接着跑被打断那轮的关键。
+ * 只注入一次；prompt 为空串则完全禁用。
+ */
+export function createContinueNudger(opts: {
+  write: (data: string) => void
+  prompt: string
+  quietMs: number
+  setTimer: (fn: () => void, ms: number) => TimerHandle
+  clearTimer: (h: TimerHandle) => void
+}): Nudger {
+  if (opts.prompt === '') return { bump() {}, cancel() {} }
+  return createIdleTimer({
+    onIdle: () => opts.write(opts.prompt + '\r'),
+    ms: opts.quietMs,
+    setTimer: opts.setTimer,
+    clearTimer: opts.clearTimer,
+  })
 }
 
 function fmtMs(ms: number): string {

@@ -7,28 +7,40 @@ import {
   type UsageLike,
 } from '../src/supervisor'
 
-/** 手动可控的定时器：去抖会 clear+set，故任意时刻只有一个 live */
+/** 手动可控的定时器：支持多个并存（nudge + stall），按 ms 触发指定的那个 */
 function timerHarness(): {
   setTimer: (fn: () => void, ms: number) => unknown
   clearTimer: (h: unknown) => void
   fire: () => void
+  fireMs: (ms: number) => void
   hasLive: () => boolean
 } {
-  let live: (() => void) | undefined
+  const live = new Map<number, { fn: () => void; ms: number }>()
+  let id = 0
   return {
-    setTimer: (fn) => {
-      live = fn
-      return {}
+    setTimer: (fn, ms) => {
+      const i = ++id
+      live.set(i, { fn, ms })
+      return i
     },
-    clearTimer: () => {
-      live = undefined
+    clearTimer: (h) => {
+      live.delete(h as number)
     },
     fire: () => {
-      const f = live
-      live = undefined
-      f?.()
+      for (const [i, t] of [...live]) {
+        live.delete(i)
+        t.fn()
+      }
     },
-    hasLive: () => live !== undefined,
+    fireMs: (ms) => {
+      for (const [i, t] of [...live]) {
+        if (t.ms === ms) {
+          live.delete(i)
+          t.fn()
+        }
+      }
+    },
+    hasLive: () => live.size > 0,
   }
 }
 
@@ -182,6 +194,57 @@ describe('Supervisor.run()', () => {
     expect(usageCalls).toBe(1)
     expect(launches.map((l) => l.resume)).toEqual([false, true])
     expect(io.statuses.join(' ')).toMatch(/限额.*续接/)
+  })
+
+  test('静默挂起：长时间无输出 → 判定 Stalled → kill 重启续接', async () => {
+    const launches: Array<{ resume: boolean }> = []
+    const timers = timerHarness()
+    const launch: LaunchFn = (_sid, resume) => {
+      launches.push({ resume })
+      let dataCb: ((d: string) => void) | undefined
+      let exitCb: ((e: { exitCode: number }) => void) | undefined
+      if (launches.length === 1) {
+        // fresh：吐一行后静默挂起，不退出；被 kill 才退出
+        setImmediate(() => dataCb?.('thinking...\n'))
+        return {
+          onData: (cb) => void (dataCb = cb),
+          onExit: (cb) => void (exitCb = cb),
+          write: () => {},
+          resize: () => {},
+          kill: () => exitCb?.({ exitCode: 143 }),
+        }
+      }
+      // resume：正常跑完
+      setImmediate(() => {
+        dataCb?.('ok\n')
+        exitCb?.({ exitCode: 0 })
+      })
+      return {
+        onData: (cb) => void (dataCb = cb),
+        onExit: (cb) => void (exitCb = cb),
+        write: () => {},
+        resize: () => {},
+        kill: () => exitCb?.({ exitCode: 0 }),
+      }
+    }
+    const io = fakeIo()
+    const sup = new Supervisor({
+      launch,
+      io,
+      sleep: () => Promise.resolve(),
+      now: () => NOW,
+      newSessionId: () => 'S',
+      setTimer: timers.setTimer,
+      clearTimer: timers.clearTimer,
+      stallMs: 5_000,
+      continuePrompt: '', // 关掉「继续」注入，隔离停滞计时
+    })
+    const p = sup.run()
+    await new Promise((r) => setImmediate(r)) // 等 fresh 启动 emit
+    timers.fireMs(5_000) // 触发停滞看门狗
+    expect(await p).toBe(0)
+    expect(launches.map((l) => l.resume)).toEqual([false, true])
+    expect(io.statuses.join(' ')).toMatch(/停滞.*续接/)
   })
 })
 

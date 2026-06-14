@@ -79,7 +79,7 @@ jixu/
 │   ├── waiter/                        ← jixu（常驻守护进程，npm 主包）
 │   │   ├── src/
 │   │   │   ├── main.ts                ← CLI：run / start / stop / status / init（+ __daemon）
-│   │   │   ├── supervisor.ts          ← jixu run 前台托管循环（PTY 起 CC + 流监控 + 自动续接）
+│   │   │   ├── supervisor.ts          ← jixu run 前台托管循环（PTY 起 CC + 流监控 + 自动续接 + 停滞看门狗 + 注入「继续」）
 │   │   │   ├── daemon.ts              ← 编排 watcher+tailer+watchdog → 引擎 → executor
 │   │   │   ├── watcher.ts             ← FSWatch job 目录 + 归一化 + 去重
 │   │   │   ├── watchdog.ts            ← N 秒无新活跃 → Stalled
