@@ -23,6 +23,8 @@ async function main(): Promise<void> {
   const JOB_DIR = join(homedir(), '.local', 'share', 'jixu', 'jobs')
   const SESSION_ID = 'demo-sess-rate-limit-001'
   const DEMO_SLEEP_SEC = 3
+  // demo 用极小缓冲让链路在 ~3s 内跑完；生产默认 SLEEP_BUFFER_MS=30s
+  const DEMO_BUFFER_MS = 500
 
   // ── Step 1：模拟 CC StopFailure hook 写入的 job 文件 ───────────────────
   mkdirSync(JOB_DIR, { recursive: true })
@@ -67,7 +69,7 @@ async function main(): Promise<void> {
   // ── Step 3：决策引擎 ──────────────────────────────────────────────────
   console.log('\n[Step 3] 决策引擎')
   const guardState = freshGuardState()
-  const decision = decide(event, SESSION_ID, guardState, { random: () => 0 })
+  const decision = decide(event, SESSION_ID, guardState, { random: () => 0, sleepBufferMs: DEMO_BUFFER_MS })
   console.log(`  决策：${JSON.stringify(decision)}`)
 
   if (decision.action !== 'sleep') {
@@ -78,7 +80,7 @@ async function main(): Promise<void> {
   const waitMs = Math.max(decision.until - Date.now(), 0)
   console.log('\n[Step 4] 等待限额重置')
   console.log(`  resets_at：${new Date(resets_at).toISOString()}`)
-  console.log(`  resets_at 安全缓冲：${SLEEP_BUFFER_MS}ms`)
+  console.log(`  resets_at 安全缓冲：${DEMO_BUFFER_MS}ms（生产默认 ${SLEEP_BUFFER_MS}ms）`)
   console.log(`  实际等待：${(waitMs / 1000).toFixed(1)}s ...`)
 
   await new Promise<void>((resolve) => { setTimeout(resolve, waitMs) })

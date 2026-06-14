@@ -86,9 +86,10 @@
 - `jixu init` — 安装 CC hook（写入 hooks.json，不修改 settings.json）
 - PID 文件 + lock 防止重复启动
 
-### F6 — PTY 交互式续（可选，M3）
-- 当检测到任务需要用户输入时，用 node-pty 以交互模式 resume
+### F6 — PTY 交互式续（M3 ✅，`jixu run`）
+- `jixu run` 用 node-pty 在当前终端托管 Claude Code：输出/输入直通，中断时在同一窗口自动续接
 - 仅在 waiter 自己 spawn 的进程上启用，不注入外部终端
+- 自管 `--session-id`，续接用 `--resume <sid>`；node-pty 为 optionalDependency 惰性加载
 
 ---
 
@@ -109,8 +110,8 @@
 | 里程碑 | 内容 | 状态 |
 |--------|------|------|
 | **M1** | 契约类型 + 决策核心(TDD) + ClaudeCodeAdapter(headless) + hook 脚本 + demo | ✅ **完成** |
-| **M2** | log-tailer + OAuth usage API + 完整 Waiter daemon（start/stop/status/init）| ⬜ 待开始 |
-| **M3** | PTY 模式 + CodexAdapter 占位 + npm/plugin 发布配置 | ⬜ 待开始 |
+| **M2** | log-tailer + OAuth usage API + 完整 Waiter daemon（start/stop/status/init）| ✅ **完成** |
+| **M3** | PTY 交互式续接（jixu run）+ CodexAdapter 占位 + npm/plugin 发布配置 | ✅ **完成** |
 
 ---
 

@@ -2,18 +2,36 @@
   "name": "jixu",
   "version": "0.1.0",
   "description": "Claude Code 会话自动续接守护进程",
-  "bin": {
-    "jixu": "src/main.ts"
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/loredunk/jixu.git",
+    "directory": "packages/waiter"
   },
-  "main": "src/main.ts",
+  "bin": {
+    "jixu": "dist/main.js"
+  },
+  "main": "dist/main.js",
+  "files": [
+    "dist",
+    "plugin"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
-    "@jixu/adapter-claude": "*",
-    "@jixu/core": "*"
+    "@jixu/adapter-claude": "^0.1.0",
+    "@jixu/core": "^0.1.0"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "start": "tsx src/main.ts start",
-    "stop": "tsx src/main.ts stop",
-    "status": "tsx src/main.ts status"
+    "build": "tsc -b",
+    "start": "node dist/main.js start",
+    "stop": "node dist/main.js stop",
+    "status": "node dist/main.js status",
+    "bundle-plugin": "node scripts/bundle-plugin.mjs",
+    "prepack": "npm run build && npm run bundle-plugin"
   }
 }

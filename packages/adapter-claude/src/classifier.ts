@@ -19,7 +19,10 @@ export function classifyHookPayload(raw: string): JixuEvent | null {
 
     if (errorType === 'rate_limit_error' || /rate.limit/i.test(message)) {
       const resets_at = extractResetsAt(parsed, raw)
-      return { type: 'RateLimited', resets_at, raw }
+      // exactOptionalPropertyTypes：resets_at 缺失时不写该字段，而非赋 undefined
+      return resets_at !== undefined
+        ? { type: 'RateLimited', resets_at, raw }
+        : { type: 'RateLimited', raw }
     }
 
     if (errorType === 'authentication_error' || /auth|unauthorized|invalid.*key/i.test(message)) {
@@ -46,7 +49,10 @@ export function classifyHookPayload(raw: string): JixuEvent | null {
     return { type: 'ApiError', reason: 'overloaded', raw }
   }
   if (/rate.?limit/i.test(raw)) {
-    return { type: 'RateLimited', resets_at: extractResetsAtFromText(raw), raw }
+    const resets_at = extractResetsAtFromText(raw)
+    return resets_at !== undefined
+      ? { type: 'RateLimited', resets_at, raw }
+      : { type: 'RateLimited', raw }
   }
   if (/auth|unauthorized/i.test(raw)) {
     return { type: 'ApiError', reason: 'auth_failed', raw }
@@ -62,6 +68,25 @@ export function classifyHookPayload(raw: string): JixuEvent | null {
 export function classifyLogLine(line: string): JixuEvent | null {
   if (/ECONNRESET|socket hang up|connection reset|socket closed/i.test(line)) {
     return { type: 'ConnDead', raw: line }
+  }
+  return null
+}
+
+/**
+ * 从交互式 PTY 输出的单行文本分类中断（M3，供 `jixu run` supervisor 用）。
+ * 先看连接层，再看应用层错误关键字。交互输出一般不含结构化 resets_at，
+ * RateLimited 不带 resets_at，由 supervisor 调 usage API 补齐。
+ */
+export function classifyStreamLine(line: string): JixuEvent | null {
+  const conn = classifyLogLine(line)
+  if (conn) return conn
+  if (/overload/i.test(line)) return { type: 'ApiError', reason: 'overloaded', raw: line }
+  if (/rate.?limit/i.test(line)) return { type: 'RateLimited', raw: line }
+  if (/unauthorized|authentication_error|invalid api key|\b401\b/i.test(line)) {
+    return { type: 'ApiError', reason: 'auth_failed', raw: line }
+  }
+  if (/billing|payment required|\b402\b/i.test(line)) {
+    return { type: 'ApiError', reason: 'billing_failed', raw: line }
   }
   return null
 }
